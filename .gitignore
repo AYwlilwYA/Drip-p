@@ -1,0 +1,19 @@
+# Gradle / Kotlin / Android
+.gradle/
+build/
+.kotlin/
+.idea/
+*.iml
+local.properties
+captures/
+.externalNativeBuild/
+.cxx/
+
+# 打包产物
+*.zip
+*.apk
+*.aab
+
+# 临时
+*.tmp
+*.log

@@ -1,0 +1,29 @@
+# Drip Manager 独立工程的版本目录。
+[versions]
+agp = "9.3.1"
+kotlin = "2.4.10"
+lifecycle = "2.11.0"
+# Material 3 Expressive 走 1.5.0 alpha 线；显式覆盖 BOM（BOM 只解析到 1.4.0）。
+m3 = "1.5.0-alpha25"
+compose-bom = "2026.06.01"
+
+[plugins]
+agp-app = { id = "com.android.application", version.ref = "agp" }
+# AGP 9 内置 Kotlin，模块不再 apply kotlin-android；这里仅用于在根 build 里 pin 版本到
+# buildscript classpath（否则 AGP 供给旧版 Kotlin，compose 编译器插件会版本冲突）。
+kotlin = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
+kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
+
+[libraries]
+androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version = "1.19.0" }
+androidx-lifecycle-runtime-compose = { group = "androidx.lifecycle", name = "lifecycle-runtime-compose", version.ref = "lifecycle" }
+androidx-lifecycle-viewmodel-compose = { group = "androidx.lifecycle", name = "lifecycle-viewmodel-compose", version.ref = "lifecycle" }
+androidx-activity-compose = { group = "androidx.activity", name = "activity-compose", version = "1.13.0" }
+
+# Compose。BOM 对齐全部 androidx.compose.* 产物，不单独 pin 版本。
+androidx-compose-bom = { group = "androidx.compose", name = "compose-bom", version.ref = "compose-bom" }
+androidx-compose-ui = { group = "androidx.compose.ui", name = "ui" }
+androidx-compose-ui-tooling = { group = "androidx.compose.ui", name = "ui-tooling" }
+androidx-compose-ui-tooling-preview = { group = "androidx.compose.ui", name = "ui-tooling-preview" }
+androidx-compose-material3 = { group = "androidx.compose.material3", name = "material3", version.ref = "m3" }
+androidx-compose-material-icons-extended = { group = "androidx.compose.material", name = "material-icons-extended" }
