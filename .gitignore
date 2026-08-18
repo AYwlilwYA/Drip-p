@@ -1,6 +1,5 @@
 # Gradle / Kotlin / Android
 .gradle/
-build/
 .kotlin/
 .idea/
 *.iml
@@ -11,8 +10,10 @@ captures/
 
 # 打包产物
 *.zip
-*.apk
 *.aab
+# 顶层 build/ 下的预编译产物（daemon.apk / manager.apk）需纳入版本控制
+!build/daemon.apk
+!build/manager.apk
 
 # 临时
 *.tmp
