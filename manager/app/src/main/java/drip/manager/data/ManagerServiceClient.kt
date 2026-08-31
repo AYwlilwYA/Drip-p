@@ -21,10 +21,10 @@ import java.util.Date
 import java.util.Locale
 
 /**
- * manager ↔ framework 的 binder 静态持有。
+ * manager ↔ daemon 的 binder 静态持有（契约 §2 LSP 式）。
  *
- * 未注入时：connect 失败 → connected=false，所有调用写文件留痕
- * （files/drip_mgr_calls.log）并返回默认值；UI 显示空态。注入后同一代码
+ * daemon 未注入 binder 时：connect 失败 → connected=false，所有调用写文件留痕
+ * （files/drip_mgr_calls.log）并返回默认值；UI 显示空态。daemon 注入后同一代码
  * 路径自动显示真实数据。
  */
 object ManagerServiceClient {
@@ -44,7 +44,7 @@ object ManagerServiceClient {
     var connected: Boolean by mutableStateOf(false)
         private set
 
-    /** 协议版本不匹配（框架协议更新，manager 需升级）。UI 可据此提示。 */
+    /** 协议版本不匹配（daemon 协议更新，manager 需升级）。UI 可据此提示。 */
     var protocolMismatch: Boolean by mutableStateOf(false)
         private set
 
@@ -52,17 +52,17 @@ object ManagerServiceClient {
         override fun binderDied() {
             service = null
             connected = false
-            log("binderDied", "framework binder died, mark disconnected")
+            log("binderDied", "daemon binder died, mark disconnected")
         }
     }
 
     fun init(context: Context) {
         appContext = context.applicationContext
-        // 进程级广播检测：若已连接则补注册。
+        // 进程级广播检测——寄生注入先于 Activity 创建（init 时已 connected）则在此补注册。
         if (connected) appContext?.let { ModuleInstallWatcher.ensureRegistered(it) }
     }
 
-    /** 外部注入的 IManagerService binder 作为已连接 service。 */
+    /** 注入通道：寄生框架注入的 IManagerService binder 优先作为已连接 service。 */
     fun injectManagerBinder(binder: IBinder?) {
         if (binder == null) return
         try {
@@ -89,12 +89,15 @@ object ManagerServiceClient {
     }
 
     /**
-     * 连接：未注入时无法建立连接，UI 显示未连接；
-     * 进程在注入环境下重启后自动重连。未连接走留痕降级。
+     * 连接（纯注入）：relay 事务码/descriptor + MGR_CODE 已随 daemon 启动随机化，
+     * manager（无 root）读不到随机值（见 doc/spec/drip-m4-r15-relay-randomize.md §4），
+     * 独立 relay→MGR_CODE 两步通道移除。连接只依赖注入：zygisk 注入（BRIDGE →
+     * attachProcess 特判 manager → framework）→ `requestManagerService` →
+     * [injectManagerBinder]。未注入则留痕降级，UI 显示未连接；进程重启后重新注入即重连。
      */
     fun connect() {
         if (connected) return
-        fail("connect", "not injected, connection unavailable")
+        fail("connect", "not injected (relay/MGR_CODE randomized, injection-only)")
     }
 
     // ==== 3.1 身份/版本 ====
@@ -111,6 +114,8 @@ object ManagerServiceClient {
     fun getModuleInfo(pkg: String): ModuleInfo? = call("getModuleInfo", null) { it.getModuleInfo(pkg) }
     fun getModuleRecommendedScope(pkg: String): List<String> =
         call("getModuleRecommendedScope", emptyList()) { it.getModuleRecommendedScope(pkg) }
+    fun getStaticScope(pkg: String): List<String> =
+        call("getStaticScope", emptyList()) { it.getStaticScope(pkg) }
     fun setModuleEnabled(pkg: String, enabled: Boolean): Boolean =
         call("setModuleEnabled", false) { it.setModuleEnabled(pkg, enabled) }
     fun getModuleScope(pkg: String): List<ScopeEntry> =
@@ -136,6 +141,19 @@ object ManagerServiceClient {
     fun startNewLogPart(verbose: Boolean): Boolean =
         call("startNewLogPart", false) { it.startNewLogPart(verbose); true }
 
+    /** Fallback：PFD 传输 DeadObjectException 时，返回日志内容字符串（≤900KB）。 */
+    fun getLogPartContent(verbose: Boolean, name: String): String? =
+        call("getLogPartContent", null) { it.getLogPartContent(verbose, name) }
+
+    // ==== 3.3.1 模块独立日志（M5：log/modules/ 按模块分文件）====
+    fun getModuleNames(): List<String> =
+        call("getModuleNames", emptyList()) { it.getModuleNames() }
+    fun getModuleLog(moduleName: String): ParcelFileDescriptor? =
+        call("getModuleLog", null) { it.getModuleLog(moduleName) }
+    /** String 版：PFD 传输在部分 ROM 上 DeadObject，优先走此通道（≤900KB）。 */
+    fun getModuleLogContent(moduleName: String): String? =
+        call("getModuleLogContent", null) { it.getModuleLogContent(moduleName) }
+
     // ==== 3.4 设备视角 ====
     fun softReboot(): Boolean = call("softReboot", false) { it.softReboot() }
     fun reboot(): Boolean = call("reboot", false) { it.reboot(); true }
@@ -148,15 +166,17 @@ object ManagerServiceClient {
     fun uninstallPackage(pkg: String, userId: Int): Boolean =
         call("uninstallPackage", false) { it.uninstallPackage(pkg, userId) }
 
-    // ==== 重启该模块作用域内所有 app ====
+    // ==== 3.8 热重载：重启该模块作用域内所有 app ====
     fun restartModuleScopeProcesses(pkg: String): Boolean =
         call("restartModuleScopeProcesses", false) { it.restartModuleScopeProcesses(pkg); true }
 
-    // ==== 模块安装/更新后通知 framework 重建配置缓存 ====
+    // ==== 3.9 热重载：模块安装/更新 → daemon 重建 ConfigCache ====
+    // （ModuleInstallWatcher 广播检测到模块事件后调用；替代 daemon 侧轮询）。
     fun notifyModuleChanged(pkg: String): Boolean =
         call("notifyModuleChanged", false) { it.notifyModuleChanged(pkg); true }
 
-    // ==== 普通 app 安装/更新后通知 framework 按需重建配置缓存 ====
+    // ==== 3.10 普通 app（非模块）安装/更新 → daemon 按需重建 ConfigCache ====
+    // （daemon 内部判断是否影响某模块作用域，避免无条件全量刷。）
     fun notifyPackageChanged(pkg: String): Boolean =
         call("notifyPackageChanged", false) { it.notifyPackageChanged(pkg); true }
 
@@ -195,16 +215,18 @@ object ManagerServiceClient {
     private inline fun <T> call(method: String, default: T, block: (IManagerService) -> T): T {
         val svc = service
         if (!connected || svc == null) {
-            log(method, "not connected")
+            log(method, "not connected (connected=$connected, svc=$svc)")
             return default
         }
         return try {
             block(svc)
         } catch (e: RemoteException) {
             log(method, "RemoteException: $e")
+            android.util.Log.e("DripManager", "$method RemoteException", e)
             default
         } catch (e: Throwable) {
-            log(method, "error: $e")
+            log(method, "error: ${e.javaClass.simpleName}: ${e.message}")
+            android.util.Log.e("DripManager", "$method error", e)
             default
         }
     }

@@ -25,7 +25,7 @@ android {
         aidl = true
     }
 
-    // AIDL 放工程级 aidl/ 目录，不在 app/src/main/aidl
+    // AIDL 放工程级 aidl/ 目录（契约 §8：manager/aidl/drip/manager/），不在 app/src/main/aidl
     sourceSets {
         getByName("main") {
             aidl.srcDirs(rootProject.file("aidl"))

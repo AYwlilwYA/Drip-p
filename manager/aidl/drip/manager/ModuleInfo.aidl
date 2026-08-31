@@ -1,4 +1,5 @@
-// 模块详情。结构化 parcelable，aidl 编译器自动生成实现。
+// 模块详情（契约 §4.3）。图标本地 PackageManager 取，推荐 scope 走 getModuleRecommendedScope。
+// 结构化 parcelable，aidl 编译器自动生成实现。
 package drip.manager;
 
 parcelable ModuleInfo {
@@ -17,6 +18,9 @@ parcelable ModuleInfo {
     String description;
 
     boolean enabled;
+
+    /** 模块是否为静态作用域（module.prop staticScope=true，scope 不可修改）。 */
+    boolean staticScope;
 
     boolean loadFailed;
 

@@ -36,7 +36,7 @@ fun DripManagerTheme(
     }
     val colorScheme = if (darkTheme && amoledBlack) baseScheme.applyAmoledBlack() else baseScheme
 
-    // motionScheme：全局 Expressive 动效；MaterialTheme 1.5 直接收 motionScheme 参数。
+    // motionScheme：全局 Expressive 动效（spec 要点 10）；MaterialTheme 1.5 直接收 motionScheme 参数。
     MaterialTheme(
         colorScheme = colorScheme,
         typography = DripTypography,

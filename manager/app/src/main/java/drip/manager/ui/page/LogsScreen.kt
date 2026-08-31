@@ -3,11 +3,6 @@ package drip.manager.ui.page
 
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.slideInHorizontally
-import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -74,30 +69,24 @@ import kotlinx.coroutines.withContext
 fun LogsScreen(
     settings: SettingsState,
     onSettingsChange: (SettingsState) -> Unit,
-    initialTag: String? = null, // 通知点击跳转时传入的初始过滤 tag
+    initialTag: String? = null,
 ) {
     val context = LocalContext.current
     var lineWrap by rememberSaveable { mutableStateOf(false) }
     var verbose by rememberSaveable { mutableStateOf(false) }
     var settingsOpen by remember { mutableStateOf(false) }
     var parts by remember { mutableStateOf<List<String>>(emptyList()) }
+    var moduleNames by remember { mutableStateOf<List<String>>(emptyList()) }
     var loaded by remember { mutableStateOf(false) }
     var refreshKey by remember { mutableIntStateOf(0) }
-
-    // 当前选中的 part
     var selectedPart by remember { mutableStateOf<String?>(null) }
     var contentLoading by remember { mutableStateOf(false) }
-
-    // 解析后的日志行
     var parsedLines by remember { mutableStateOf<List<LogLine>>(emptyList()) }
-
-    // 模块列表（tag + 计数），按条数降序
+    var moduleLines by remember { mutableStateOf<List<LogLine>>(emptyList()) }
+    var moduleLoading by remember { mutableStateOf(false) }
     var tagCounts by remember { mutableStateOf<List<Pair<String, Int>>>(emptyList()) }
-
-    // 二级页状态：非 null 进入详情（"全部" 或某个 tag）
     var detailTag by remember { mutableStateOf<String?>(null) }
 
-    // 通知点击跳转：直接进二级页（等 parsedLines 加载完再设置）
     var initialTagApplied by remember { mutableStateOf(false) }
     LaunchedEffect(initialTag, parsedLines) {
         if (initialTag != null && !initialTagApplied && parsedLines.isNotEmpty()) {
@@ -106,26 +95,37 @@ fun LogsScreen(
         }
     }
 
-    // 初次连接：读真实 verbose 开关
     LaunchedEffect(Unit) {
         ManagerServiceClient.connect()
         verbose = ManagerServiceClient.isVerboseLogEnabled()
         refreshKey++
     }
 
-    // 拉取 part 列表，首次加载时自动选中最新 part
     LaunchedEffect(refreshKey) {
         if (refreshKey > 0) {
             parts = withContext(Dispatchers.IO) { ManagerServiceClient.getLogParts(false) }
+            // 模块独立日志：过滤框架内部 tag（已在主日志"框架"分组展示）
+            moduleNames = withContext(Dispatchers.IO) { ManagerServiceClient.getModuleNames() }
+                .filter { !isFrameworkTag(it) }
             loaded = true
-            // 首次加载后自动选中最新 part
             if (selectedPart == null || selectedPart !in parts) {
                 selectedPart = parts.lastOrNull()
             }
         }
     }
 
-    // 选中 part 后读取内容 + 解析（模块列表数据源）
+    // 模块日志模式：点击模块列表项 → 从 log/modules/ 读该模块的独立日志
+    val detailIsModule = detailTag != null && detailTag in moduleNames
+    LaunchedEffect(detailTag) {
+        val name = detailTag
+        if (name != null && name in moduleNames) {
+            moduleLoading = true
+            val text = withContext(Dispatchers.IO) { readModuleLog(name) }
+            moduleLines = withContext(Dispatchers.Default) { parseLogLines(text) }
+            moduleLoading = false
+        }
+    }
+
     LaunchedEffect(selectedPart) {
         val name = selectedPart ?: return@LaunchedEffect
         contentLoading = true
@@ -136,20 +136,132 @@ fun LogsScreen(
         contentLoading = false
     }
 
-    // ── 二级页 BackHandler：拦截系统返回键，回到一级页而非退出 Activity ──
     BackHandler(enabled = detailTag != null) { detailTag = null }
 
-    // ── 二级页：AnimatedVisibility 从右侧滑入 + 淡入过渡 ──
-    AnimatedVisibility(
-        visible = detailTag != null,
-        enter = slideInHorizontally(initialOffsetX = { it }) + fadeIn(),
-        exit = slideOutHorizontally(targetOffsetX = { it }) + fadeOut(),
-    ) {
+    // 二级页用 Box z-ordering 完全覆盖一级页
+    Box(Modifier.fillMaxSize()) {
+        // ── 一级页 ──
+        Column(Modifier.fillMaxSize()) {
+            PanelHeader(
+                title = "日志",
+                subtitle = when {
+                    !loaded -> "加载中…"
+                    parts.isEmpty() -> "暂无日志部分"
+                    else -> "共 ${parts.size} 个 part · ${parsedLines.size} 条日志"
+                },
+                actions = {
+                    IconButton(onClick = { lineWrap = !lineWrap }) {
+                        Icon(
+                            Icons.AutoMirrored.Outlined.WrapText,
+                            contentDescription = "换行",
+                            tint = if (lineWrap) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    IconButton(onClick = { settingsOpen = true }) {
+                        Icon(Icons.Outlined.Tune, contentDescription = "设置")
+                    }
+                },
+            )
+
+            if (loaded && parts.isNotEmpty()) {
+                Column(Modifier.fillMaxWidth()) {
+                    HorizontalDivider()
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState())
+                            .padding(horizontal = 12.dp, vertical = 8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        parts.forEach { name ->
+                            FilterChip(
+                                selected = selectedPart == name,
+                                onClick = { selectedPart = name },
+                                label = { Text(name, fontSize = 12.sp) },
+                            )
+                        }
+                    }
+                    HorizontalDivider()
+                }
+            }
+
+            when {
+                !loaded -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Text("加载中…", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                parts.isEmpty() -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Text("暂无日志内容", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                contentLoading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Text("加载中…", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                else -> {
+                    LazyColumn(Modifier.fillMaxSize()) {
+                        item(key = "all_logs") {
+                            ListItem(
+                                modifier = Modifier.clickable { detailTag = "全部" },
+                                headlineContent = { Text("全部日志", fontWeight = FontWeight.Medium) },
+                                supportingContent = {
+                                    Text("${parsedLines.size} 条日志", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                },
+                                trailingContent = {
+                                    Icon(Icons.AutoMirrored.Outlined.KeyboardArrowRight, contentDescription = "查看", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                                },
+                                colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+                            )
+                            HorizontalDivider()
+                        }
+                        if (tagCounts.isNotEmpty()) {
+                            item(key = "module_header") {
+                                Text("模块", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(start = 16.dp, top = 12.dp, bottom = 4.dp))
+                            }
+                            items(items = tagCounts, key = { it.first }) { (tag, count) ->
+                                ListItem(
+                                    modifier = Modifier.clickable { detailTag = tag },
+                                    headlineContent = { Text(tag) },
+                                    supportingContent = {
+                                        Text("$count 条日志", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    },
+                                    trailingContent = {
+                                        Icon(Icons.AutoMirrored.Outlined.KeyboardArrowRight, contentDescription = "查看", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    },
+                                    colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+                                )
+                            }
+                        }
+                        if (moduleNames.isNotEmpty()) {
+                            item(key = "module_log_header") {
+                                Text("模块独立日志", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(start = 16.dp, top = 12.dp, bottom = 4.dp))
+                            }
+                            items(items = moduleNames, key = { "mod_$it" }) { name ->
+                                ListItem(
+                                    modifier = Modifier.clickable { detailTag = name },
+                                    headlineContent = { Text(name) },
+                                    supportingContent = {
+                                        Text("模块日志", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    },
+                                    trailingContent = {
+                                        Icon(Icons.AutoMirrored.Outlined.KeyboardArrowRight, contentDescription = "查看", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    },
+                                    colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── 二级页覆盖层（z-order 在一级页之上） ──
         val currentDetailTag = detailTag
         if (currentDetailTag != null) {
             LogsScreenDetail(
                 tag = currentDetailTag,
-                lines = parsedLines,
+                lines = if (detailIsModule) moduleLines else parsedLines,
+                moduleMode = detailIsModule,
+                loading = detailIsModule && moduleLoading,
                 logStyle = settings.logDisplayStyle,
                 lineWrap = lineWrap,
                 onLineWrapToggle = { lineWrap = !lineWrap },
@@ -158,164 +270,15 @@ fun LogsScreen(
         }
     }
 
-    // ── 一级页 ──
-    Column(Modifier.fillMaxSize()) {
-        // 标题栏：标题 + 状态副标题 + 换行/设置按钮
-        PanelHeader(
-            title = "日志",
-            subtitle = when {
-                !loaded -> "加载中…"
-                parts.isEmpty() -> "暂无日志部分"
-                else -> {
-                    val totalLogs = parsedLines.size
-                    "共 ${parts.size} 个 part · $totalLogs 条日志"
-                }
-            },
-            actions = {
-                IconButton(onClick = { lineWrap = !lineWrap }) {
-                    Icon(
-                        Icons.AutoMirrored.Outlined.WrapText,
-                        contentDescription = "换行",
-                        tint = if (lineWrap) MaterialTheme.colorScheme.primary
-                        else MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                IconButton(onClick = { settingsOpen = true }) {
-                    Icon(Icons.Outlined.Tune, contentDescription = "设置")
-                }
-            },
-        )
-
-        // ── Part 选择工具条：单通道 part 文件选择 ──
-        if (loaded && parts.isNotEmpty()) {
-            Column(Modifier.fillMaxWidth()) {
-                HorizontalDivider()
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .horizontalScroll(rememberScrollState())
-                        .padding(horizontal = 12.dp, vertical = 8.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    // Part 文件列表（可横向滚动）
-                    parts.forEach { name ->
-                        FilterChip(
-                            selected = selectedPart == name,
-                            onClick = { selectedPart = name },
-                            label = { Text(name, fontSize = 12.sp) },
-                        )
-                    }
-                }
-                HorizontalDivider()
-            }
-        }
-
-        // ── 主视图：「全部日志」项 + 模块列表 ──
-        when {
-            !loaded -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text(
-                    "加载中…",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            parts.isEmpty() -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text(
-                    "暂无日志内容",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            contentLoading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text(
-                    "加载中…",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            else -> {
-                LazyColumn(Modifier.fillMaxSize()) {
-                    // ── 最顶端「全部日志」项 ──
-                    item(key = "all_logs") {
-                        ListItem(
-                            modifier = Modifier.clickable { detailTag = "全部" },
-                            headlineContent = {
-                                Text("全部日志", fontWeight = FontWeight.Medium)
-                            },
-                            supportingContent = {
-                                Text(
-                                    "${parsedLines.size} 条日志",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            },
-                            trailingContent = {
-                                Icon(
-                                    Icons.AutoMirrored.Outlined.KeyboardArrowRight,
-                                    contentDescription = "查看",
-                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            },
-                            colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-                        )
-                        HorizontalDivider()
-                    }
-
-                    // ── 模块列表：每模块一行（模块名 + 日志条数） ──
-                    if (tagCounts.isNotEmpty()) {
-                        item(key = "module_header") {
-                            Text(
-                                "模块",
-                                style = MaterialTheme.typography.labelMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.padding(start = 16.dp, top = 12.dp, bottom = 4.dp),
-                            )
-                        }
-                        items(
-                            items = tagCounts,
-                            key = { it.first },
-                        ) { (tag, count) ->
-                            ListItem(
-                                modifier = Modifier.clickable { detailTag = tag },
-                                headlineContent = { Text(tag) },
-                                supportingContent = {
-                                    Text(
-                                        "$count 条日志",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    )
-                                },
-                                trailingContent = {
-                                    Icon(
-                                        Icons.AutoMirrored.Outlined.KeyboardArrowRight,
-                                        contentDescription = "查看",
-                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    )
-                                },
-                                colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-                            )
-                        }
-                    }
-                }
-            }
-        }
-    }
-
     // ── 设置抽屉 ──
     if (settingsOpen) {
         LogSettingsSheet(
             verbose = verbose,
             logStyle = settings.logDisplayStyle,
-            onVerboseChange = {
-                verbose = it
-                ManagerServiceClient.setVerboseLogEnabled(it)
-            },
-            onLogStyleChange = {
-                onSettingsChange(settings.copy(logDisplayStyle = it))
-            },
+            onVerboseChange = { verbose = it; ManagerServiceClient.setVerboseLogEnabled(it) },
+            onLogStyleChange = { onSettingsChange(settings.copy(logDisplayStyle = it)) },
             onRotate = {
-                ManagerServiceClient.startNewLogPart(false) // 单通道，忽略 verbose
+                ManagerServiceClient.startNewLogPart(false)
                 Toast.makeText(context, "日志已轮转", Toast.LENGTH_SHORT).show()
                 selectedPart = null
                 refreshKey++
@@ -325,7 +288,6 @@ fun LogsScreen(
     }
 }
 
-/** 日志设置抽屉：verbose 开关（控制 d 级采集）+ 显示样式选择 + 轮转。 */
 @Composable
 private fun LogSettingsSheet(
     verbose: Boolean,
@@ -338,59 +300,49 @@ private fun LogSettingsSheet(
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(Modifier.verticalScroll(rememberScrollState()).padding(bottom = 24.dp)) {
             SheetHeading("日志设置", Icons.Outlined.Tune)
-            ToggleRow(
-                title = "详细日志 (verbose)",
-                subtitle = "记录框架 d 级别日志",
-                icon = Icons.Outlined.Visibility,
-                checked = verbose,
-                onCheckedChange = onVerboseChange,
-            )
+            ToggleRow(title = "详细日志 (verbose)", subtitle = "记录框架 d 级别日志", icon = Icons.Outlined.Visibility, checked = verbose, onCheckedChange = onVerboseChange)
             HorizontalDivider(Modifier.padding(vertical = 8.dp))
-            // 显示样式选择
             SheetHeading("显示样式", Icons.Outlined.Tune)
-            androidx.compose.foundation.layout.Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 24.dp, vertical = 4.dp),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                FilterChip(
-                    selected = logStyle == LogDisplayStyle.TERMINAL,
-                    onClick = { onLogStyleChange(LogDisplayStyle.TERMINAL) },
-                    label = { Text("终端") },
-                    modifier = Modifier.weight(1f),
-                )
-                FilterChip(
-                    selected = logStyle == LogDisplayStyle.CARD,
-                    onClick = { onLogStyleChange(LogDisplayStyle.CARD) },
-                    label = { Text("卡片") },
-                    modifier = Modifier.weight(1f),
-                )
+            Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                FilterChip(selected = logStyle == LogDisplayStyle.TERMINAL, onClick = { onLogStyleChange(LogDisplayStyle.TERMINAL) }, label = { Text("终端") }, modifier = Modifier.weight(1f))
+                FilterChip(selected = logStyle == LogDisplayStyle.CARD, onClick = { onLogStyleChange(LogDisplayStyle.CARD) }, label = { Text("卡片") }, modifier = Modifier.weight(1f))
             }
             HorizontalDivider(Modifier.padding(vertical = 8.dp))
-            SheetAction(
-                title = "轮转当前日志",
-                subtitle = "关闭当前 part 并开启新 part",
-                icon = Icons.Outlined.RestartAlt,
-                tint = MaterialTheme.colorScheme.error,
-                onClick = { onRotate(); onDismiss() },
-            )
+            SheetAction(title = "轮转当前日志", subtitle = "关闭当前 part 并开启新 part", icon = Icons.Outlined.RestartAlt, tint = MaterialTheme.colorScheme.error, onClick = { onRotate(); onDismiss() })
         }
     }
 }
 
-/** 经 PFD 读取指定 part 的日志文本（单通道，忽略 verbose）。 */
 private fun readLogPart(name: String): String {
-    val pfd = ManagerServiceClient.getLogPart(false, name)
-        ?: return "读取失败：未返回文件描述符（part 可能已被轮转删除）"
-    return try {
-        FileInputStream(pfd.fileDescriptor).use { it.readBytes().toString(Charsets.UTF_8) }
-    } catch (t: Throwable) {
-        "读取失败：$t"
-    } finally {
-        try {
-            pfd.close()
-        } catch (_: Throwable) {
+    var lastPfdError: String? = null
+    repeat(3) { attempt ->
+        val pfd = ManagerServiceClient.getLogPart(false, name)
+        if (pfd == null) {
+            lastPfdError = "未返回文件描述符"
+            if (attempt < 2) { Thread.sleep(200); return@repeat }
+        } else {
+            try {
+                val bytes = FileInputStream(pfd.fileDescriptor).use { it.readBytes() }
+                return bytes.toString(Charsets.UTF_8)
+            } catch (t: Throwable) {
+                lastPfdError = "${t.javaClass.simpleName}: ${t.message}"
+                if (attempt < 2) { Thread.sleep(200); return@repeat }
+            } finally {
+                try { pfd.close() } catch (_: Throwable) {}
+            }
         }
     }
+    val content = try { ManagerServiceClient.getLogPartContent(false, name) } catch (_: Throwable) { null }
+    if (content != null) return content
+    return "读取失败：PFD ($lastPfdError) + String fallback 均失败"
+}
+
+/** 读模块独立日志（log/modules/<part>/<module>.log）。String 版优先（PFD 在部分 ROM 上 DeadObject）。 */
+private fun readModuleLog(moduleName: String): String {
+    repeat(3) { attempt ->
+        val content = try { ManagerServiceClient.getModuleLogContent(moduleName) } catch (_: Throwable) { null }
+        if (content != null) return content
+        if (attempt < 2) Thread.sleep(200)
+    }
+    return "读取失败：getModuleLogContent 无内容"
 }

@@ -1,4 +1,4 @@
-// ModuleFailureWatcher：增量检测模块加载失败 → 弹系统通知。Manager 进程级。
+// ModuleFailureWatcher：增量检测模块加载失败 → 弹系统通知。Manager 进程级，寄生/独立均适用。
 package drip.manager.data
 
 import android.content.Context
@@ -17,6 +17,7 @@ import kotlinx.coroutines.launch
 /**
  * 模块加载失败增量检测 + 通知。
  *
+ * 机制：
  * - 每 15s 轮询 getModuleLoadFailures()
  * - 与 SharedPreferences 已通知集合对比，新增的失败 → 发通知
  * - 去重键：packageName + reason（同一模块同原因只通知一次）
@@ -110,7 +111,7 @@ object ModuleFailureWatcher {
                 3 -> "API 不支持"
                 else -> "未知原因($reason)"
             }
-            // Notification.Builder + Icon.createWithBitmap；
+            // 寄生模式：Notification.Builder + Icon.createWithBitmap（绕过 system_server 资源解析）；
             // 独立模式：NotificationCompat.Builder + 资源 ID（标准路径）。
             val notification =
                 if (isParasiticHostProcess()) {

@@ -1,4 +1,4 @@
-// 状态常驻通知：由 manager 宿主进程投递（daemon 是 root 进程，无 UI Context，
+// 状态常驻通知：由 manager 宿主进程投递（daemon 是 root app_process，无 UI Context，
 // 拿不到 NotificationManager）。daemon 只持久化开关；manager 连接成功后按开关投递/撤销。
 package drip.manager.data
 
@@ -29,15 +29,17 @@ private const val STATUS_NOTIFICATION_ID = 1001
 private const val STATUS_CHANNEL_ID = "drip_status"
 private const val TAG = "DripManager"
 
-// 寄生模式（进程 = 宿主 com.android.shell）下 manager 无独立 Activity 组件可点。
-// 改指宿主可启动的 BugreportWarningActivity + LAUNCH_MANAGER category，由宿主 framework
-// 接管 → manager UI。独立模式保持原样。
+// 寄生模式（进程 = 宿主 com.android.shell）下 manager 无独立 Activity 组件可点：宿主 manifest
+// 不含 drip.manager.ui.MainActivity，`Intent(context, MainActivity::class.java)` 解析成
+// com.android.shell/drip.manager.ui.MainActivity → AMS ActivityNotFound。改指宿主可启动的
+// BugreportWarningActivity + LAUNCH_MANAGER category，由宿主 framework 的
+// ParasiticManagerHooker（ActivityClientRecord 重定向）接管 → manager UI。独立模式保持原样。
 private const val PARASITIC_HOST_PACKAGE = "com.android.shell"
 private const val PARASITIC_HOST_ACTIVITY = "com.android.shell.BugreportWarningActivity"
 private const val LAUNCH_MANAGER_CATEGORY = "org.lsposed.manager.LAUNCH_MANAGER"
 
-/** 当前进程是否为寄生宿主（com.android.shell）。
- * 用 /proc/self/cmdline（与 Process.myProcessName 等效，且不受 minSdk 27 限制——
+/** 当前进程是否为寄生宿主（com.android.shell），与 framework ParasiticManagerHooker.isHostProcess
+ * 同判据。用 /proc/self/cmdline（与 Process.myProcessName 等效，且不受 minSdk 27 限制——
  * myProcessName 需 API 28+）。cmdline 以 NUL 结尾，substringBefore(0.toChar()) 去掉。 */
 internal fun isParasiticHostProcess(): Boolean = try {
     val buf = ByteArray(64)
@@ -47,9 +49,12 @@ internal fun isParasiticHostProcess(): Boolean = try {
     false
 }
 
-// ==== 寄生模式通知图标修复 ====
-// 寄生模式通知由宿主进程发出，manager 的资源 ID 不在宿主资源表中 → fallback 默认图标。
-// 修复：寄生模式下将图标以 Bitmap Icon 内嵌到 Notification；独立模式保持资源 ID 不变。
+// ==== 寄生模式通知图标修复（M6）====
+// 根因：寄生模式通知由 com.android.shell 进程发出（pkg=com.android.shell），
+// system_server 收到 Notification 后用 pkg 查资源表解析 small icon 资源 ID；
+// manager 的 R.drawable.ic_stat_drip 不在 shell 资源表中 → fallback shell 默认图标。
+// 修复：寄生模式下将 ic_stat_drip 以 Bitmap Icon 内嵌到 Notification（Icon.createWithBitmap
+// 携带像素数据，system_server 无需解析资源 ID）；独立模式保持资源 ID 不变。
 
 /** 将 Drawable 转为 Bitmap（API 23+ 通知 Icon 需要）。 */
 internal fun drawableToBitmap(drawable: android.graphics.drawable.Drawable): Bitmap {
@@ -66,7 +71,7 @@ internal fun drawableToBitmap(drawable: android.graphics.drawable.Drawable): Bit
 
 /**
  * 获取 Drip 通知小图标（Icon 对象）。
- * - 寄生模式：返回 Bitmap Icon；
+ * - 寄生模式：返回 Bitmap Icon（绕过 system_server 资源解析）；
  * - 独立模式：返回 null（调用方直接用 R.drawable.ic_stat_drip 资源 ID）。
  */
 internal fun dripSmallIcon(context: Context): Icon? {
@@ -75,8 +80,8 @@ internal fun dripSmallIcon(context: Context): Icon? {
     return Icon.createWithBitmap(drawableToBitmap(drawable))
 }
 
-/** 通知本体点击打开 manager 的 Intent：寄生模式 → 宿主 Activity + LAUNCH_MANAGER；
- * 独立模式 → manager MainActivity 显式组件。 */
+/** 通知本体点击打开 manager 的 Intent：寄生模式 → 宿主 Activity + LAUNCH_MANAGER（重定向接管）；
+ * 独立模式 → manager MainActivity 显式组件（原逻辑，降级路径不受影响）。 */
 internal fun buildManagerOpenIntent(context: Context): Intent =
     if (isParasiticHostProcess()) {
         Intent().apply {
@@ -120,7 +125,7 @@ fun showStatusNotification(context: Context) {
                 context, 0, intent,
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
             )
-        // Notification.Builder + Icon.createWithBitmap；
+        // 寄生模式：Notification.Builder + Icon.createWithBitmap（绕过 system_server 资源解析）；
         // 独立模式：NotificationCompat.Builder + 资源 ID（标准路径）。
         val notification =
             if (isParasiticHostProcess()) {
@@ -180,7 +185,7 @@ fun createFailureNotificationChannel(context: Context) {
         .createNotificationChannel(channel)
 }
 
-// ==== 注入失败通知 ====
+// ==== 注入失败通知（M5）====
 
 const val INJECTION_FAILURE_CHANNEL_ID = "drip_inject_fail"
 const val INJECTION_FAILURE_NOTIFICATION_ID = 2001

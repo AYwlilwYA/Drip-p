@@ -1,4 +1,4 @@
-// 设置项 UI 状态：框架项（statusNotification/verboseLog/forceAppIcon）以框架生效值
+// 设置项 UI 状态：daemon 项（statusNotification/verboseLog/forceAppIcon）最终以 daemon 生效值
 // 为准，本地 SharedPreferences 存用户意图；主题项（amoledBlack/dynamicColor）纯本地持久化。
 package drip.manager.data
 

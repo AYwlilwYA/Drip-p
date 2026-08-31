@@ -100,7 +100,7 @@ private fun parseKey(k: String): Pair<String, Int> {
     return k.substring(0, i) to k.substring(i + 1).toInt()
 }
 
-/** Scope 子页：作用域勾选（draft 制）+ 三抽屉 + ApplyBar；未连接时显示空态。 */
+/** Scope 子页：作用域勾选（draft 制）+ 三抽屉 + ApplyBar；未连接 daemon 时空态。 */
 @Composable
 fun ScopeScreen(
     module: drip.manager.ModuleInfo,
@@ -109,6 +109,10 @@ fun ScopeScreen(
     val context = LocalContext.current
     val pm = context.packageManager
     var moduleEnabled by rememberSaveable(module.packageName) { mutableStateOf(module.enabled) }
+    val isStaticScope = module.staticScope == true
+    // M8：scope 包含 "system"（静态作用域声明或用户手动添加）时自动追加系统应用列表
+    var includeSystemApps by rememberSaveable { mutableStateOf(false) }
+    var scopeLoaded by rememberSaveable { mutableStateOf(false) }
     var query by rememberSaveable { mutableStateOf("") }
 
     // 过滤状态。默认隐藏系统应用；但「系统应用」判断不能只用 FLAG_SYSTEM
@@ -151,9 +155,9 @@ fun ScopeScreen(
         val includeNew = ManagerServiceClient.getIncludeNewApps(module.packageName)
         val daemonRecommended = ManagerServiceClient.getModuleRecommendedScope(module.packageName).toSet()
         // 应用列表/图标/标签/推荐作用域移出主线程避免卡顿。
-        // 列表来源：daemon（root）getInstalledPackagesFromAllUsers——本地 PM
+        // 列表来源（多用户完整）：daemon（root）getInstalledPackagesFromAllUsers——本地 PM
         // 只能看到 user 0，user 10 的应用必须由 daemon 列出；label/icon 仍走本地 PM 快路径。
-        // daemon 未连接（返回空）时回退本地 user 0 列表。
+        // daemon 未连接（返回空）时回退本地 user 0 列表（历史行为，不回归）。
         val (map, list, rec) = withContext(Dispatchers.Default) {
             val pm = context.packageManager
             val localPkgs = try {
@@ -164,7 +168,7 @@ fun ScopeScreen(
             val appMap = localPkgs.mapNotNull { it.applicationInfo }.associateBy { it.packageName }
             fun toScopeApp(pi: PackageInfo): ScopeApp {
                 val ai = pi.applicationInfo ?: throw NoSuchElementException()
-                // uid = userId*100000 + appId；UserHandle.getUserId 是隐藏 API 走除法
+                // uid = userId*100000 + appId（契约 §4.1）；UserHandle.getUserId 是隐藏 API 走除法
                 val userId = ai.uid.coerceAtLeast(0) / 100000
                 return ScopeApp(
                     packageName = pi.packageName,
@@ -193,7 +197,45 @@ fun ScopeScreen(
         includeNewApps = includeNew
         initialKeys = initial
         checkedKeys = initial
+        // M8：scope 包含 "system" 时自动追加系统应用列表（静态作用域声明或用户手动添加均触发）
+        includeSystemApps = scope.any { it.appPackageName == "system" }
+        scopeLoaded = true
         loaded = true
+    }
+
+    // 静态作用域包含 system 时，自动追加设备上所有系统应用到列表
+    LaunchedEffect(includeSystemApps, loaded) {
+        if (!loaded || !includeSystemApps) return@LaunchedEffect
+        val sysApps = withContext(Dispatchers.Default) {
+            val localPkgs = try {
+                pm.getInstalledApplications(PackageManager.GET_META_DATA)
+            } catch (_: Throwable) {
+                emptyList()
+            }
+            val appMap = appInfoMap
+            localPkgs.filter { (it.flags and ApplicationInfo.FLAG_SYSTEM) != 0 }
+                .mapNotNull { ai ->
+                    val pkg = ai.packageName
+                    if (apps.any { it.packageName == pkg }) return@mapNotNull null
+                    val userId = ai.uid.coerceAtLeast(0) / 100000
+                    ScopeApp(
+                        packageName = pkg,
+                        userId = userId,
+                        label = appMap[pkg]?.loadLabel(pm)?.toString() ?: pkg,
+                        system = true,
+                        isModule = false,
+                        installTime = 0L,
+                        updateTime = 0L,
+                    )
+                }
+        }
+        if (sysApps.isNotEmpty()) {
+            val existing = apps
+            apps = existing + sysApps
+            // 系统应用默认 checked = true（它们在静态作用域内）
+            checkedKeys = checkedKeys + sysApps.map { key(it.packageName, it.userId) }
+            initialKeys = checkedKeys
+        }
     }
 
     // 过滤 + 排序
@@ -307,31 +349,42 @@ fun ScopeScreen(
             placeholder = "搜索应用",
             modifier = Modifier.padding(horizontal = 20.dp),
             trailingContent = {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    IconButton(onClick = { selectOpen = true }) {
-                        Icon(Icons.Outlined.Checklist, contentDescription = "选择")
-                    }
-                    val filtering = showSystem || showModules || recommendedOnly ||
-                            selectedUserIdx != 0
-                    IconButton(onClick = { filterOpen = true }) {
-                        BadgedBox(badge = { if (filtering) Badge(Modifier.size(6.dp)) }) {
-                            Icon(Icons.Outlined.FilterList, contentDescription = "过滤")
+                if (!isStaticScope) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        IconButton(onClick = { selectOpen = true }) {
+                            Icon(Icons.Outlined.Checklist, contentDescription = "选择")
                         }
-                    }
-                    IconButton(onClick = { sortOpen = true }) {
-                        Icon(
-                            Icons.AutoMirrored.Outlined.Sort,
-                            contentDescription = "排序",
-                            tint = if (sortOrder != ScopeSort.Relevance || reverseSort) {
-                                MaterialTheme.colorScheme.primary
-                            } else {
-                                MaterialTheme.colorScheme.onSurfaceVariant
-                            },
-                        )
+                        val filtering = showSystem || showModules || recommendedOnly ||
+                                selectedUserIdx != 0
+                        IconButton(onClick = { filterOpen = true }) {
+                            BadgedBox(badge = { if (filtering) Badge(Modifier.size(6.dp)) }) {
+                                Icon(Icons.Outlined.FilterList, contentDescription = "过滤")
+                            }
+                        }
+                        IconButton(onClick = { sortOpen = true }) {
+                            Icon(
+                                Icons.AutoMirrored.Outlined.Sort,
+                                contentDescription = "排序",
+                                tint = if (sortOrder != ScopeSort.Relevance || reverseSort) {
+                                    MaterialTheme.colorScheme.primary
+                                } else {
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                },
+                            )
+                        }
                     }
                 }
             },
         )
+
+        if (isStaticScope) {
+            Text(
+                text = "静态作用域：模块声明的固定作用域，不可修改",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
+            )
+        }
 
         when {
             !loaded -> Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
@@ -378,6 +431,7 @@ fun ScopeScreen(
                         checked = appKey in checkedKeys,
                         recommended = app.packageName in recommended,
                         icon = icon,
+                        readOnly = isStaticScope,
                         onToggle = {
                             checkedKeys = if (appKey in checkedKeys) checkedKeys - appKey
                             else checkedKeys + appKey
@@ -388,7 +442,7 @@ fun ScopeScreen(
         }
 
         // 底部应用栏：作为根 Column 末子节点沉底（LazyColumn weight(1f) 之后），不与列表重叠。
-        if (dirty) {
+        if (dirty && !isStaticScope) {
             ApplyBar(
                 added = added,
                 removed = removed,
@@ -415,8 +469,8 @@ fun ScopeScreen(
         }
     }
 
-    // 选择抽屉
-    if (selectOpen) {
+    // 选择抽屉（静态作用域时隐藏）
+    if (selectOpen && !isStaticScope) {
         ModalBottomSheet(onDismissRequest = { selectOpen = false }) {
             Column(Modifier.verticalScroll(rememberScrollState()).padding(bottom = 24.dp)) {
                 SheetHeading("选择", Icons.Outlined.Checklist)
@@ -468,8 +522,8 @@ fun ScopeScreen(
         }
     }
 
-    // 过滤抽屉
-    if (filterOpen) {
+    // 过滤抽屉（静态作用域时隐藏）
+    if (filterOpen && !isStaticScope) {
         ModalBottomSheet(onDismissRequest = { filterOpen = false }) {
             Column(Modifier.verticalScroll(rememberScrollState()).padding(bottom = 24.dp)) {
                 SheetHeading("过滤", Icons.Outlined.FilterList)
@@ -525,8 +579,8 @@ fun ScopeScreen(
         }
     }
 
-    // 排序抽屉
-    if (sortOpen) {
+    // 排序抽屉（静态作用域时隐藏）
+    if (sortOpen && !isStaticScope) {
         ModalBottomSheet(onDismissRequest = { sortOpen = false }) {
             Column(Modifier.verticalScroll(rememberScrollState()).padding(bottom = 24.dp)) {
                 SheetHeading("排序", Icons.AutoMirrored.Outlined.Sort)
@@ -561,7 +615,8 @@ private fun ScopeSort.label(): String =
     }
 
 /**
- * 本地读模块推荐作用域 meta-data（drip_scope / xposedscope）+ scope.list：
+ * 本地读模块推荐作用域 meta-data（drip_scope / xposedscope）+ scope.list，与 daemon
+ * （ModuleApkParser.readRecommendedScope）行为一致：
  *  1. `drip_scope`——字符串（逗号/分号）或字符串数组资源；
  *  2. `xposedscope`——字符串数组资源或分号分隔字符串；
  *  3. `META-INF/xposed/scope.list`——每行一个包名。
@@ -629,12 +684,13 @@ private fun AppScopeRow(
     checked: Boolean,
     recommended: Boolean,
     icon: Bitmap?,
+    readOnly: Boolean = false,
     onToggle: () -> Unit,
 ) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onToggle)
+            .then(if (readOnly) Modifier else Modifier.clickable(onClick = onToggle))
             .padding(horizontal = 20.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -673,7 +729,10 @@ private fun AppScopeRow(
                 contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
             )
         }
-        Checkbox(checked = checked, onCheckedChange = { onToggle() })
+        Checkbox(
+            checked = checked,
+            onCheckedChange = if (readOnly) null else { _ -> onToggle() },
+        )
     }
 }
 

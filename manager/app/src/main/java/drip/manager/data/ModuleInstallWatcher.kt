@@ -1,5 +1,5 @@
 // ModuleInstallWatcher：监听应用安装/更新广播，检测 Xposed 模块并投递「尚未激活」系统通知。
-// 动态注册（RECEIVER_NOT_EXPORTED），检测与激活的 PM/框架调用都在后台线程。
+// 动态注册（RECEIVER_NOT_EXPORTED），检测与激活的 PM/daemon 调用都在后台线程。
 package drip.manager.data
 
 import android.app.NotificationChannel
@@ -61,8 +61,8 @@ object ModuleInstallWatcher {
     /**
      * 进程级常驻注册：幂等，进程存活期间不随 Activity 生命周期注销。
      * MainActivity 首次进入 + ManagerServiceClient init/inject 兜底调用；寄生模式下
-     * Activity 退出后进程仍存活，广播（模块安装/更新）仍能送达并触发缓存重建。
-     * 进程死亡后 receiver 由系统自动回收，无需显式注销。
+     * Activity 退出后进程被 daemon 保活，广播（模块安装/更新）仍能送达并触发 daemon
+     * 缓存重建。进程死亡后 receiver 由系统自动回收，无需显式注销。
      */
     fun ensureRegistered(context: Context) {
         if (processRegistered) return
@@ -126,7 +126,7 @@ object ModuleInstallWatcher {
         activateReceiver = null
     }
 
-    /** 检测在后台线程跑（PM/框架调用不阻塞 onReceive），命中则投递系统通知。 */
+    /** 检测在后台线程跑（PM/daemon 调用不阻塞 onReceive），命中则投递系统通知。 */
     private fun handlePackageEvent(
         context: Context,
         pkg: String,
@@ -149,8 +149,8 @@ object ModuleInstallWatcher {
 
     /**
      * 判定是否值得弹通知：① 是 Xposed 模块（meta-data `xposedmodule` 优先，
-     * daemon getAllModules 扫描兜底）② 框架未启用（已激活过不重复弹）。
-     * 非模块包 → notifyPackageChanged（框架按需重建）；
+     * daemon getAllModules 扫描兜底）② daemon 未启用（已激活过不重复弹）。
+     * 非模块包 → notifyPackageChanged（daemon 按需重建）；
      * 已启用模块更新 → syncRecommendedScope（推荐作用域合并新增）。
      */
     private suspend fun detectPendingModule(
@@ -166,17 +166,23 @@ object ModuleInstallWatcher {
         val daemonModule = allModules.firstOrNull { it.packageName == pkg }
         val isModule = daemonModule != null || isXposedModuleViaMetaData(context, pkg)
         if (!isModule) {
-            // 普通 app（非模块）安装/更新 → 通知 framework 按需重建配置缓存。
-            // framework 内部做相关性判断，避免无条件全量刷。失败静默。
+            // 普通 app（非模块）安装/更新 → 通知 daemon 按需重建 ConfigCache。
+            // 影响场景：该包在某启用模块 scope/staticScope 中（scope 需重算 uid/包名），
+            // 或某启用模块开启 includeNewApps（新装 app 自动纳入）。daemon 内部做相关性
+            // 判断（isScopeRelevant），避免无条件全量刷。失败静默（未连接时放弃，等后续
+            // 事件/重启兜底）。
             notifyPackageChanged(pkg)
             return null
         }
-        // 模块安装/更新（无论是否已启用）→ 通知 framework 重建配置缓存，
-        // 让新 fork 的 app 拿到最新模块配置。失败静默，不阻塞广播流程。
+        // 热重载：模块安装/更新（无论是否已启用）→ 通知 daemon 重建 ConfigCache，
+        // 让新 fork 的 app 拿到最新模块 dex/作用域。失败静默（manager 未连 daemon 时放弃，
+        // 等 daemon 下次启动/模块启停重建兜底），不阻塞广播流程（本函数在后台线程执行）。
         notifyDaemonModuleChanged(pkg)
         if (daemonModule?.enabled == true) {
-            // 已启用模块更新 → 模块新版本的推荐作用域同步「合并新增」：新推荐包并入 scope，
-            // 用户手动选的保留不覆盖；模块新版本移除的推荐包不删（只加不减）。失败静默。
+            // 已启用模块更新（PACKAGE_REPLACED，不重新激活）→ 模块新版本的
+            // 推荐作用域不会自动应用。此处同步「合并新增」：新推荐包并入 scope，用户手动
+            // 选的保留不覆盖；模块新版本移除的推荐包不删（只加不减，防静默移除用户手动
+            // 保留的 app）。失败静默，不弹通知。
             if (isUpdate) {
                 val added = syncRecommendedScope(context, pkg)
                 Log.i(TAG, "enabled module $pkg updated: recommended scope merge added $added app(s)")
@@ -186,7 +192,7 @@ object ModuleInstallWatcher {
         return PendingModule(pkg, resolveAppLabel(context, pkg), isUpdate)
     }
 
-    /** 通知 framework 按需重建缓存（普通 app 事件），失败静默。 */
+    /** 通知 daemon 按需重建缓存（普通 app 事件；daemon 内部判断相关性），失败静默。 */
     private fun notifyPackageChanged(pkg: String) {
         try {
             ManagerServiceClient.connect()
@@ -200,7 +206,7 @@ object ModuleInstallWatcher {
         }
     }
 
-    /** 通知 framework 重建缓存；未连接时先 connect 再调（与 activate 同约定），失败静默。 */
+    /** 通知 daemon 重建缓存；未连接时先 connect 再调（与 activate 同约定），失败静默。 */
     private fun notifyDaemonModuleChanged(pkg: String) {
         try {
             ManagerServiceClient.connect()
@@ -214,7 +220,7 @@ object ModuleInstallWatcher {
         }
     }
 
-    /** 本地 PM 读 manifest meta-data `xposedmodule`（Xposed 模块标准标记）。 */
+    /** 本地 PM 读 manifest meta-data `xposedmodule`（LSPosed 模块标准标记）。 */
     private fun isXposedModuleViaMetaData(context: Context, pkg: String): Boolean = try {
         val ai = context.packageManager.getApplicationInfo(pkg, PackageManager.GET_META_DATA)
         ai.metaData?.getBoolean("xposedmodule") == true
@@ -249,7 +255,7 @@ object ModuleInstallWatcher {
     /**
      * 投递模块「尚未激活」系统通知。无 POST_NOTIFICATIONS 权限时静默失败（与状态通知同约定）。
      * 通知本体点击 → 打开 manager；action「激活」→ [ACTION_ACTIVATE_MODULE] 广播。
-     * 寄生模式：Notification.Builder + Icon.createWithBitmap；
+     * 寄生模式：Notification.Builder + Icon.createWithBitmap（绕过 system_server 资源解析）；
      * 独立模式：NotificationCompat.Builder + 资源 ID（标准路径）。
      */
     private fun showModuleNotification(context: Context, pending: PendingModule) {
@@ -278,7 +284,7 @@ object ModuleInstallWatcher {
             }
             val notification =
                 if (isParasiticHostProcess()) {
-                    // 寄生模式：用 Bitmap Icon
+                    // 寄生模式：用 Bitmap Icon（绕过 system_server 资源解析）
                     val smallIcon = dripSmallIcon(context)!!
                     val actionIcon = dripSmallIcon(context) ?: smallIcon
                     val action = android.app.Notification.Action.Builder(

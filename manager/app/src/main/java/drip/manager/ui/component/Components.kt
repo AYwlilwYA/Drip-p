@@ -44,7 +44,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 
-/** 状态标签：4dp 胶囊 + labelSmall */
+/** 状态标签：4dp 胶囊 + labelSmall（spec 要点 6） */
 @Composable
 fun StatusPill(
     text: String,
@@ -152,7 +152,7 @@ fun SettingRow(
     }
 }
 
-/** 分段组卡：外 16dp 圆角扁平色块 */
+/** 分段组卡：外 16dp 圆角扁平色块（spec 要点 5 的外层） */
 @Composable
 fun GroupCard(modifier: Modifier = Modifier, content: @Composable ColumnScope.() -> Unit) {
     Surface(

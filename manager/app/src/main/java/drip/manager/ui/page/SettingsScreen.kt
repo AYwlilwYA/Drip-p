@@ -285,7 +285,8 @@ fun SettingsScreen(
     }
 }
 
-/** 创建桌面快捷方式（本地 ShortcutManager 实现）。 */
+/** 创建桌面快捷方式（本地 ShortcutManager 真实实现）。寄生模式用宿主 Activity + LAUNCH_MANAGER，
+ * 由宿主 framework 重定向到 manager UI；独立模式直接指向 MainActivity。 */
 private fun createShortcut(context: Context) {
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
         Toast.makeText(context, "当前系统不支持动态快捷方式", Toast.LENGTH_SHORT).show()
@@ -311,13 +312,13 @@ private fun createShortcut(context: Context) {
 private fun dumpHookInfo(context: Context) {
     val receiver = object : IFrameworkDumpReceiver.Stub() {
         override fun onDumpResult(success: Boolean, path: String) {
-            // 转储成功/失败都会回调 onDumpResult
+            // daemon 回调（binder 线程）：转储成功/失败都会回调 onDumpResult
         }
     }
     val ok = ManagerServiceClient.dumpHookInfo(receiver)
     Toast.makeText(
         context,
-        if (ok) "已触发转储，结果写入框架日志目录"
+        if (ok) "已触发转储，结果写入 /data/adb/drip/log"
         else "转储不可用（未连接 daemon，已留痕）",
         Toast.LENGTH_SHORT,
     ).show()

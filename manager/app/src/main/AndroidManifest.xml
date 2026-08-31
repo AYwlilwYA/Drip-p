@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- Android 13+ 状态常驻通知需运行时权限。 -->
+    <!-- Android 13+ 状态常驻通知需运行时权限（M3e）。 -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- Android 11+ 包可见性：无 QUERY_ALL_PACKAGES 时 getInstalledPackages 只返回系统
          应用（229/230 system），用户应用（微信/抖音等）不可见。Scope 页需全量列表。 -->

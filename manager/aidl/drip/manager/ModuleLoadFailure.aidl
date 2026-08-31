@@ -1,4 +1,4 @@
-// 模块加载失败。结构化 parcelable。
+// 模块加载失败（契约 §4.2）。结构化 parcelable。
 package drip.manager;
 
 parcelable ModuleLoadFailure {

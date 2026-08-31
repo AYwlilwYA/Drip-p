@@ -78,13 +78,13 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-/** 模块行 UI 数据：接口 ModuleInfo + 本地解析的 scope 预览标签 */
+/** 模块行 UI 数据：契约 ModuleInfo + 本地解析的 scope 预览标签 */
 private data class UiModule(
     val info: drip.manager.ModuleInfo,
     val scopeLabels: List<String>,
 )
 
-/** Modules 页：模块列表（点击进 Scope，长按弹操作面板）。未连接时显示空态。 */
+/** Modules 页：模块列表（点击进 Scope，长按弹操作面板）。未连接 daemon 时空态。 */
 @Composable
 fun ModulesScreen(
     onModuleClick: (drip.manager.ModuleInfo) -> Unit,
@@ -263,7 +263,7 @@ fun ModulesScreen(
     }
 }
 
-/** 本地按包名解析 app 标签（图标/标签不跨进程）。 */
+/** 本地按包名解析 app 标签（契约 §4.3：图标/标签不跨进程）。 */
 private fun resolveAppLabel(context: Context, packageName: String): String = try {
     val pm = context.packageManager
     pm.getApplicationLabel(pm.getApplicationInfo(packageName, 0)).toString()
@@ -420,7 +420,7 @@ private fun ModuleRow(
     }
 }
 
-/** 模块长按操作面板：头部 + 打开/详情/强制停止/重启作用域/卸载（未连接时降级留痕）。 */
+/** 模块长按操作面板：头部 + 打开/详情/强制停止/重启作用域/卸载（daemon 未连接时降级留痕）。 */
 @Composable
 private fun ModuleActionSheet(
     module: drip.manager.ModuleInfo,
@@ -498,7 +498,8 @@ private fun ModuleActionSheet(
                     onDismiss()
                 },
             )
-            // 重启该模块作用域内所有 app。
+            // 热重载：重启该模块作用域内所有 app（daemon 聚合 forceStopPackage，
+            // 读 DB scope + staticScope，进程重拉后注入最新配置）。
             SheetAction(
                 title = "重启作用域进程",
                 icon = Icons.Outlined.RestartAlt,

@@ -36,7 +36,7 @@ private fun levelColor(level: Char?): Color = when (level) {
 
 /** 终端样式行：等宽字体、紧凑排列、级别色。 */
 @Composable
-fun TerminalLogLine(line: LogLine, lineWrap: Boolean) {
+fun TerminalLogLine(line: LogLine, lineWrap: Boolean, fontSize: Float = 12f) {
     val color = levelColor(line.level)
     val text = if (line.time != null && line.level != null && line.tag != null) {
         "${line.time} ${line.level}/${line.tag}: ${line.message}"
@@ -47,8 +47,8 @@ fun TerminalLogLine(line: LogLine, lineWrap: Boolean) {
         text = text,
         style = MaterialTheme.typography.bodySmall.copy(
             fontFamily = FontFamily.Monospace,
-            fontSize = 12.sp,
-            lineHeight = 16.sp,
+            fontSize = fontSize.sp,
+            lineHeight = (fontSize + 4f).sp,
         ),
         color = color,
         maxLines = if (lineWrap) Int.MAX_VALUE else 1,
@@ -58,7 +58,7 @@ fun TerminalLogLine(line: LogLine, lineWrap: Boolean) {
 
 /** 卡片样式行：一条一卡，级别色条 + 分行显示。 */
 @Composable
-fun CardLogLine(line: LogLine) {
+fun CardLogLine(line: LogLine, fontSize: Float = 12f) {
     val barColor = levelColor(line.level).let {
         if (it == Color.Unspecified) MaterialTheme.colorScheme.onSurfaceVariant else it
     }
@@ -113,7 +113,7 @@ fun CardLogLine(line: LogLine) {
                 // 消息正文
                 Text(
                     text = line.message,
-                    style = MaterialTheme.typography.bodySmall,
+                    style = MaterialTheme.typography.bodySmall.copy(fontSize = fontSize.sp),
                     maxLines = 100,
                 )
             }

@@ -1,4 +1,4 @@
-// 日志行解析器：将框架原始日志行解析为结构化 LogLine，用于模块隔离与双样式渲染。
+// 日志行解析器：将 daemon 原始日志行解析为结构化 LogLine，用于模块隔离与双样式渲染。
 package drip.manager.ui.page
 
 import java.util.regex.Pattern
@@ -21,7 +21,7 @@ fun Char.levelLabel(): String = when (this) {
     else -> "OTHER"
 }
 
-// 标准日志格式：
+// 标准 daemon 日志格式：
 // 2026-08-18 18:53:11.545 I/DripDaemon: Drip daemon ready
 private val LOG_PATTERN: Pattern = Pattern.compile(
     "^(\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}\\.\\d{3})\\s+([IWED])/([^:]+):\\s(.*)$",
@@ -43,19 +43,31 @@ fun parseLogLine(line: String): LogLine {
     }
 }
 
-/** 批量解析日志文本，按行拆分后过滤空行，返回 List<LogLine>。 */
+/** 批量解析日志文本，按行拆分后过滤空行、空消息行和非标准行，返回 List<LogLine>。 */
 fun parseLogLines(text: String): List<LogLine> =
     text.lineSequence()
         .filter { it.isNotBlank() }
         .map { parseLogLine(it) }
+        .filter { it.message.isNotBlank() && it.message != "'" }
         .toList()
 
-/** 从解析后的日志行中提取所有 tag 及其出现次数，返回按数量降序排列的 List<Pair<tag, count>>。 */
-fun extractTags(lines: List<LogLine>): List<Pair<String, Int>> =
-    lines.filter { it.tag != null }
+/** 框架内部 tag——归为"框架"统一展示。"Log" 是 part 分隔行 tag（精确匹配，防误伤 Logger 等模块）。 */
+private val FRAMEWORK_TAG_PREFIXES = listOf("Drip")
+
+internal fun isFrameworkTag(tag: String): Boolean =
+    tag == "Log" || FRAMEWORK_TAG_PREFIXES.any { tag.startsWith(it) }
+
+/** 从解析后的日志行中提取所有 tag 及其出现次数。框架内部 tag 合并为"框架"，返回按数量降序排列。 */
+fun extractTags(lines: List<LogLine>): List<Pair<String, Int>> {
+    val frameworkCount = lines.filter { it.tag != null && isFrameworkTag(it.tag!!) }.size
+    val moduleTags = lines.filter { it.tag != null && !isFrameworkTag(it.tag!!) }
         .groupBy { it.tag!! }
         .map { (tag, list) -> tag to list.size }
-        .sortedByDescending { it.second }
+    val result = mutableListOf<Pair<String, Int>>()
+    if (frameworkCount > 0) result.add("框架" to frameworkCount)
+    result.addAll(moduleTags.sortedByDescending { it.second })
+    return result
+}
 
 /** 日志显示样式常量。 */
 object LogDisplayStyle {

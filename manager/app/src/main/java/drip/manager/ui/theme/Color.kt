@@ -1,4 +1,4 @@
-// Drip 手调紫色兜底色板：动态取色不可用（Android 12 以下）时使用。
+// Drip 手调紫色兜底色板：动态取色不可用（Android 12 以下）时使用，MRepo 式手调。
 package drip.manager.ui.theme
 
 import androidx.compose.material3.darkColorScheme
@@ -11,7 +11,7 @@ val DripPurpleLight = Color(0xFF8F7FFF)
 val DripPurpleDark = Color(0xFFB8A9FF)
 
 // 状态色（与品牌紫同族的绿/红）
-val DripGreen = Color(0xFF59B463)   // 完成态固定绿
+val DripGreen = Color(0xFF59B463)   // 完成态固定绿（spec 要点 9）
 val DripRed = Color(0xFFE5484D)
 val DripAmber = Color(0xFFF5A524)
 

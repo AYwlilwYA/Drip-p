@@ -74,7 +74,7 @@ import drip.manager.ui.page.ScopeScreen
 import drip.manager.ui.page.SettingsScreen
 import drip.manager.ui.theme.DripManagerTheme
 
-/** 底部 4 个 tab：Outlined 常态 / Filled 选中成对。 */
+/** 底部 4 个 tab：Outlined 常态 / Filled 选中成对（spec 要点 10）。 */
 enum class ManagerTab(
     val label: String,
     val iconOutlined: ImageVector,
@@ -132,7 +132,7 @@ private fun ManagerApp(
     }
     val snackbarHostState = remember { SnackbarHostState() }
 
-    // 初始化 client（注入前连接失败 → 各页显示未连接空态，调用留痕）
+    // 初始化 client（寄生注入前连接失败 → 各页显示未连接空态，调用留痕）
     val appContext = LocalContext.current.applicationContext
     // Android 13+ 请求 POST_NOTIFICATIONS 的 launcher：授权后若开关仍开则补发常驻通知。
     val notificationPermissionLauncher = rememberLauncherForActivityResult(
@@ -147,13 +147,14 @@ private fun ManagerApp(
         ManagerServiceClient.init(appContext)
         ManagerServiceClient.connect()
         // 进程级常驻注册应用安装/更新监听（幂等）。不再随 Activity 销毁注销——
-        // 进程存活期间广播检测保持在线，进程死亡后 receiver 由系统自动回收。
+        // 寄生模式下 Activity 退出后进程被 daemon 保活，广播检测保持在线；独立安装进程
+        // 存活期间同样保持，进程死亡后 receiver 由系统自动回收。
         ModuleInstallWatcher.ensureRegistered(appContext)
-        // 模块加载失败增量检测。
+        // 模块加载失败增量检测（寄生/独立均适用）。
         ModuleFailureWatcher.startWatching(appContext)
-        // 注入失败检测：框架报告失败标记 → 通知 + 自动 dumpLogs。
+        // M5：注入失败检测（relay_fail / bridge_fail 标记 → 通知 + 自动 dumpLogs）。
         InjectionFailureWatcher.startWatching(appContext)
-        // 框架开关为开时投递常驻状态通知（无权限则请求，授权后补发）。
+        // M3e：daemon 开关为开时投递常驻状态通知（无权限则请求，授权后补发）。
         if (ManagerServiceClient.isStatusNotificationEnabled()) {
             if (hasNotificationPermission(appContext)) {
                 showStatusNotification(appContext)
@@ -243,7 +244,7 @@ private fun ManagerApp(
     }
 }
 
-/** 浮动底栏：28dp 圆角 + 6dp 阴影 + surfaceContainer + 64dp 高。 */
+/** Magisk 式浮动底栏：28dp 圆角 + 6dp 阴影 + surfaceContainer + 64dp 高。 */
 @Composable
 private fun FloatingBottomBar(
     selected: ManagerTab,

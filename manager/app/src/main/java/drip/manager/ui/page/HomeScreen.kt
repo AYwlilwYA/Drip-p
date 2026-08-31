@@ -35,7 +35,7 @@ import androidx.compose.ui.unit.dp
 import drip.manager.data.ManagerServiceClient
 import drip.manager.ui.component.StatusPill
 
-/** Home 页：品牌卡 + 框架/系统信息 + 关于入口。未连接时框架信息显示空态。 */
+/** Home 页：品牌卡 + 框架/系统信息 + 关于入口。未连接 daemon 时框架信息显示空态。 */
 @Composable
 fun HomeScreen() {
     var showAbout by remember { mutableStateOf(false) }
@@ -63,7 +63,7 @@ fun HomeScreen() {
             .padding(horizontal = 20.dp, vertical = 24.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        // protocolMismatch 提示：已连上但协议版本不匹配（常驻，直至协议匹配）
+        // protocolMismatch 提示：已连上 daemon 但协议版本不匹配（常驻，直至协议匹配）
         if (ManagerServiceClient.protocolMismatch) {
             Surface(
                 modifier = Modifier.fillMaxWidth(),

@@ -14,8 +14,9 @@ import kotlinx.coroutines.launch
 /**
  * 注入失败检测 + 通知 + 日志自动转储。
  *
+ * 机制：
  * - 启动后立即检查 isInjectionFailed()
- * - 若框架报告注入失败标记存在 → 发通知 + 自动 dumpLogs 一次
+ * - 若 daemon 报告 relay_fail / bridge_fail 标记存在 → 发通知 + 自动 dumpLogs 一次
  * - 去重：标记存在期间只通知一次（SharedPreferences 记录已通知状态）
  * - 通知内容：「Drip注入失败」+ 正文「崩溃日志已保存\n可联系开发者，提供 /Download/Driplog 日志文件」
  * - 点击通知 → 打开 manager（buildManagerOpenIntent）
@@ -34,7 +35,7 @@ object InjectionFailureWatcher {
         val appCtx = context.applicationContext
         scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
         Log.i(TAG, "start watching")
-        // 首次立即检查，然后周期轮询
+        // 首次立即检查，然后周期轮询（标记可能在 framework 注入后才出现）
         scope?.launch {
             checkAndNotify(appCtx)
             while (true) {
@@ -80,7 +81,7 @@ object InjectionFailureWatcher {
                 intent,
                 android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE,
             )
-            // Notification.Builder + Icon.createWithBitmap；
+            // 寄生模式：Notification.Builder + Icon.createWithBitmap（绕过 system_server 资源解析）；
             // 独立模式：NotificationCompat.Builder + 资源 ID（标准路径）。
             val notification =
                 if (isParasiticHostProcess()) {
