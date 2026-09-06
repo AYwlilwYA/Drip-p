@@ -96,6 +96,8 @@ object ModuleFailureWatcher {
         label: String,
         reason: Int,
     ) {
+        // 权限门统一在 StatusNotification.notificationPermissionGate（Android 13+ 无权限静默）。
+        if (!notificationPermissionGate(context, "module-failure")) return
         try {
             createFailureNotificationChannel(context)
             val intent = buildFailureIntent(context, packageName, label)

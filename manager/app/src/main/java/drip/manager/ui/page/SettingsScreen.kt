@@ -35,10 +35,9 @@ import drip.manager.IFrameworkDumpReceiver
 import drip.manager.R
 import drip.manager.data.ManagerServiceClient
 import drip.manager.data.SettingsState
+import drip.manager.data.StatusNotificationController
 import drip.manager.data.buildManagerOpenIntent
-import drip.manager.data.cancelStatusNotification
 import drip.manager.data.hasNotificationPermission
-import drip.manager.data.showStatusNotification
 import drip.manager.ui.component.GroupCard
 import drip.manager.ui.component.SettingRow
 
@@ -52,12 +51,13 @@ fun SettingsScreen(
     onSettingsChange: (SettingsState) -> Unit,
 ) {
     val context = LocalContext.current
-    // Android 13+ 请求 POST_NOTIFICATIONS：授权后若开关仍开则补发常驻通知。
+    // Android 13+ 权限引导 launcher：弹窗必须由 Activity 发起；授权结果转交控制器
+    //（事件 D），投递与否由控制器统一决策，UI 不直投（drip-m8-fix-boot-notification.md）。
     val notificationPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) { granted ->
-        if (granted && ManagerServiceClient.isStatusNotificationEnabled()) {
-            showStatusNotification(context)
+        if (granted) {
+            StatusNotificationController.onPermissionGranted(context)
         }
     }
 
@@ -70,6 +70,7 @@ fun SettingsScreen(
                 verboseLog = ManagerServiceClient.isVerboseLogEnabled(),
                 forceAppIcon = ManagerServiceClient.isForcedLauncherIcons(),
                 loggingSilenced = ManagerServiceClient.isLoggingSilenced(),
+                b2Enabled = ManagerServiceClient.isB2Enabled(),
             ),
         )
     }
@@ -99,14 +100,12 @@ fun SettingsScreen(
                         onCheckedChange = { enabled ->
                             ManagerServiceClient.setStatusNotificationEnabled(enabled)
                             onSettingsChange(settings.copy(statusNotification = enabled))
-                            if (enabled) {
-                                if (hasNotificationPermission(context)) {
-                                    showStatusNotification(context)
-                                } else {
-                                    notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-                                }
-                            } else {
-                                cancelStatusNotification(context)
+                            // 开关只改状态；投递/撤销由控制器统一决策（事件 C，UI 不直投）。
+                            StatusNotificationController.onToggleChanged(enabled, context)
+                            // 打开但缺权限 → 引导系统授权（Android 13+ 硬约束）；授权后事件 D 补投。
+                            if (enabled && !hasNotificationPermission(context)) {
+                                notificationPermissionLauncher.launch(
+                                    Manifest.permission.POST_NOTIFICATIONS)
                             }
                         },
                     )
@@ -149,6 +148,20 @@ fun SettingsScreen(
                         onCheckedChange = {
                             ManagerServiceClient.setForcedLauncherIcons(it)
                             onSettingsChange(settings.copy(forceAppIcon = it))
+                        },
+                    )
+                },
+            )
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            SettingRow(
+                title = "方法名随机化 (B2)",
+                subtitle = "开 = 更强隐藏；遇部分模块不可用时可关闭，丧失部分隐藏性能",
+                trailing = {
+                    Switch(
+                        checked = settings.b2Enabled,
+                        onCheckedChange = { enabled ->
+                            ManagerServiceClient.setB2Enabled(enabled)
+                            onSettingsChange(settings.copy(b2Enabled = enabled))
                         },
                     )
                 },

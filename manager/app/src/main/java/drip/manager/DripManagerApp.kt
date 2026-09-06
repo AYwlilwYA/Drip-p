@@ -6,6 +6,7 @@ import drip.manager.data.InjectionFailureWatcher
 import drip.manager.data.ManagerServiceClient
 import drip.manager.data.ModuleFailureWatcher
 import drip.manager.data.ModuleInstallWatcher
+import drip.manager.data.StatusNotificationController
 
 /**
  * Manager 进程级后台入口（解耦，2026-09-06）。
@@ -29,6 +30,10 @@ class DripManagerApp : Application() {
         try {
             // appContext 供 ManagerServiceClient 写调用留痕 / 通知；幂等。
             ManagerServiceClient.init(this)
+            // 独立触发通道事件 B：进程 bind 就绪。注入事件（onInjected）先于本类创建发生
+            //（appContext 尚 null），此处两事件齐备 → 控制器投递常驻通知——开机自愈
+            //（无任何 UI）场景在此弹出（doc/spec/drip-m8-fix-boot-notification.md）。
+            StatusNotificationController.onAppReady(this)
             // 进程级模块安装/更新广播检测（幂等，进程存活期间常驻）。
             ModuleInstallWatcher.ensureRegistered(this)
             // 模块加载失败 / 注入失败轮询（各自幂等，scope 非空即返回）。

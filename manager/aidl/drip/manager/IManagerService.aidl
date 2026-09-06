@@ -111,4 +111,10 @@ interface IManagerService {
     // Fallback：PFD 传输 DeadObjectException 时，返回日志内容字符串（≤900KB）。
     // 末尾追加，wire-compatible，不 bump PROTOCOL_VERSION。
     String getLogPartContent(boolean verbose, String name);
+
+    // B2 方法名随机化开关（全局，默认开）：开 = app 进程 serve B2 dex（方法名随机，隐藏更强）；
+    // 关 = 全体 app 进程 serve P0 dex（方法原名），遇部分模块不可用时关闭，丧失部分隐藏性能。
+    // system_server 恒 P0，不受本开关影响。末尾追加，wire-compatible，不 bump PROTOCOL_VERSION。
+    boolean isB2Enabled();
+    void setB2Enabled(boolean enabled);
 }

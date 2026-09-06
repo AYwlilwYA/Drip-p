@@ -9,6 +9,8 @@ data class SettingsState(
     val verboseLog: Boolean = false,
     val forceAppIcon: Boolean = false,
     val loggingSilenced: Boolean = false,
+    /** B2 方法名随机化（全局，默认开）：关 = 遇部分模块不可用时降级 P0（原名），丧失部分隐藏性能。 */
+    val b2Enabled: Boolean = true,
     val amoledBlack: Boolean = true,
     val dynamicColor: Boolean = true,
     /** 日志显示样式：0 = 终端（默认），1 = 卡片。 */
@@ -20,6 +22,7 @@ data class SettingsState(
             .putBoolean(KEY_VERBOSE_LOG, verboseLog)
             .putBoolean(KEY_FORCE_APP_ICON, forceAppIcon)
             .putBoolean(KEY_LOGGING_SILENCED, loggingSilenced)
+            .putBoolean(KEY_B2_ENABLED, b2Enabled)
             .putBoolean(KEY_AMOLED_BLACK, amoledBlack)
             .putBoolean(KEY_DYNAMIC_COLOR, dynamicColor)
             .putInt(KEY_LOG_DISPLAY_STYLE, logDisplayStyle)
@@ -33,6 +36,7 @@ data class SettingsState(
         private const val KEY_VERBOSE_LOG = "verbose_log"
         private const val KEY_FORCE_APP_ICON = "force_app_icon"
         private const val KEY_LOGGING_SILENCED = "logging_silenced"
+        private const val KEY_B2_ENABLED = "b2_enabled"
         private const val KEY_AMOLED_BLACK = "amoled_black"
         private const val KEY_DYNAMIC_COLOR = "dynamic_color"
         private const val KEY_LOG_DISPLAY_STYLE = "log_display_style"
@@ -44,6 +48,7 @@ data class SettingsState(
                 verboseLog = prefs.getBoolean(KEY_VERBOSE_LOG, false),
                 forceAppIcon = prefs.getBoolean(KEY_FORCE_APP_ICON, false),
                 loggingSilenced = prefs.getBoolean(KEY_LOGGING_SILENCED, false),
+                b2Enabled = prefs.getBoolean(KEY_B2_ENABLED, true),
                 amoledBlack = prefs.getBoolean(KEY_AMOLED_BLACK, true),
                 dynamicColor = prefs.getBoolean(KEY_DYNAMIC_COLOR, true),
                 logDisplayStyle = prefs.getInt(KEY_LOG_DISPLAY_STYLE, 0),

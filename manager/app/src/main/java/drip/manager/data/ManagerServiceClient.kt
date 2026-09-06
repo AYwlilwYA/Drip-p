@@ -52,6 +52,8 @@ object ManagerServiceClient {
         override fun binderDied() {
             service = null
             connected = false
+            // 会话复位：允许 daemon 重注入后由 StatusNotificationController 再次投递。
+            StatusNotificationController.onDaemonBinderDied()
             log("binderDied", "daemon binder died, mark disconnected")
         }
     }
@@ -80,15 +82,12 @@ object ManagerServiceClient {
             service = svc
             connected = true
             protocolMismatch = false
-            // 进程级广播检测兜底（appContext 通常由 MainActivity.init 先设置，此处防御）。
+            // 进程级广播检测兜底（appContext 通常由 DripManagerApp.onCreate 先设置，此处防御）。
             appContext?.let { ModuleInstallWatcher.ensureRegistered(it) }
-            // 常驻通知前移：进程注入成功（connected 建立）即发，先于/不等 MainActivity。
-            // 无通知权限时跳过（MainActivity/Settings 会发起授权请求，授权后补发）。
-            appContext?.let { ctx ->
-                if (hasNotificationPermission(ctx) && isStatusNotificationEnabled()) {
-                    showStatusNotification(ctx)
-                }
-            }
+            // 独立触发通道：注入完成事件 → 通知控制器统一决策。注入恒早于 Application
+            // 创建（appContext 尚 null），Context 由 DripManagerApp.onCreate 的 onAppReady
+            // 事件补齐——此处不再内联投递逻辑（doc/spec/drip-m8-fix-boot-notification.md）。
+            StatusNotificationController.onInjected()
             log("inject", "injected binder accepted, protocol=$PROTOCOL_VERSION")
         } catch (e: Throwable) {
             log("inject", "error: $e")
@@ -207,6 +206,12 @@ object ManagerServiceClient {
     fun isLoggingSilenced(): Boolean = call("isLoggingSilenced", false) { it.isLoggingSilenced() }
     fun setLoggingSilenced(enabled: Boolean): Boolean =
         call("setLoggingSilenced", false) { it.setLoggingSilenced(enabled); true }
+
+    // ==== B2 方法名随机化（全局，默认开）====
+    // 未连接 fallback=true（与 daemon 无记录默认一致，UI 不误显示关）。
+    fun isB2Enabled(): Boolean = call("isB2Enabled", true) { it.isB2Enabled() }
+    fun setB2Enabled(enabled: Boolean): Boolean =
+        call("setB2Enabled", true) { it.setB2Enabled(enabled); true }
 
     // ==== 3.5.2 转储日志 ====
     fun dumpLogs(): String? = call("dumpLogs", null) { it.dumpLogs() }

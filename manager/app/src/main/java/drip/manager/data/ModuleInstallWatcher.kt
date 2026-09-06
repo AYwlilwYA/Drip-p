@@ -259,7 +259,8 @@ object ModuleInstallWatcher {
      * 独立模式：NotificationCompat.Builder + 资源 ID（标准路径）。
      */
     private fun showModuleNotification(context: Context, pending: PendingModule) {
-        if (!hasNotificationPermission(context)) return
+        // 权限门统一在 StatusNotification.notificationPermissionGate（Android 13+ 无权限静默）。
+        if (!notificationPermissionGate(context, "module")) return
         try {
             createModuleNotificationChannel(context)
             val openIntent = buildManagerOpenIntent(context).apply {

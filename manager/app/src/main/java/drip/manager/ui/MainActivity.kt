@@ -65,8 +65,8 @@ import drip.manager.data.InjectionFailureWatcher
 import drip.manager.data.ModuleInstallWatcher
 import drip.manager.data.SettingsState
 import drip.manager.data.EXTRA_LOG_FILTER_TAG
+import drip.manager.data.StatusNotificationController
 import drip.manager.data.hasNotificationPermission
-import drip.manager.data.showStatusNotification
 import drip.manager.ui.page.HomeScreen
 import drip.manager.ui.page.LogsScreen
 import drip.manager.ui.page.ModulesScreen
@@ -134,28 +134,28 @@ private fun ManagerApp(
 
     // 初始化 client（寄生注入前连接失败 → 各页显示未连接空态，调用留痕）
     val appContext = LocalContext.current.applicationContext
-    // Android 13+ 请求 POST_NOTIFICATIONS 的 launcher：授权后若开关仍开则补发常驻通知。
+    // Android 13+ 权限引导 launcher：系统权限弹窗必须由 Activity 发起，这是通知模块唯一
+    // 需要 UI 的地方；授权结果转交控制器决策（事件 D），UI 不直接投递通知。
     val notificationPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) { granted ->
-        if (granted && ManagerServiceClient.isStatusNotificationEnabled()) {
-            showStatusNotification(appContext)
+        if (granted) {
+            StatusNotificationController.onPermissionGranted(appContext)
         }
     }
 
     LaunchedEffect(Unit) {
-        // 解耦（2026-09-06）：进程级常驻后台（模块事件 watcher / 失败轮询）统一由
-        // DripManagerApp.onCreate 在进程 bind 时 bootstrap，不再依赖本 Activity 是否进入。
-        // 这里只做 UI 侧：初始化 client 引用 + 连接（注入后即真实数据）+ 权限请求。
+        // 解耦（2026-09-06）：进程级常驻后台（watcher / 通知）已由 DripManagerApp.onCreate
+        // + StatusNotificationController 在进程 bind 时完成（通知独立触发通道事件 B，
+        // 见 doc/spec/drip-m8-fix-boot-notification.md），不再依赖本 Activity 是否进入。
+        // 这里只做 UI 侧：初始化 client 引用 + 连接（注入后即真实数据）+ 权限引导。
         ManagerServiceClient.init(appContext)
         ManagerServiceClient.connect()
-        // M3e：daemon 开关为开时投递常驻状态通知（无权限则请求，授权后补发）。
-        if (ManagerServiceClient.isStatusNotificationEnabled()) {
-            if (hasNotificationPermission(appContext)) {
-                showStatusNotification(appContext)
-            } else {
-                notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-            }
+        // 通知投递完全由控制器驱动；此处仅处理「开关开但缺权限」→ 引导系统授权，
+        // 授权成功后控制器自动补投。
+        if (ManagerServiceClient.isStatusNotificationEnabled()
+            && !hasNotificationPermission(appContext)) {
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
     }
 

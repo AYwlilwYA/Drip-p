@@ -70,6 +70,8 @@ object InjectionFailureWatcher {
 
     /** 发送注入失败通知。 */
     private fun sendInjectionFailureNotification(context: Context) {
+        // 权限门统一在 StatusNotification.notificationPermissionGate（Android 13+ 无权限静默）。
+        if (!notificationPermissionGate(context, "injection-failure")) return
         try {
             createInjectionFailureChannel(context)
             val intent = buildManagerOpenIntent(context).apply {

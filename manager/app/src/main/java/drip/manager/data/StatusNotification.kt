@@ -98,6 +98,18 @@ fun hasNotificationPermission(context: Context): Boolean =
         ActivityCompat.checkSelfPermission(
             context, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
 
+/**
+ * 投递前权限门（权限判断实体只此一处）：Android 13+ 无 POST_NOTIFICATIONS 时
+ * [NotificationManagerCompat.notify] 会被系统静默丢弃（不抛异常、无日志）。
+ * 所有 show 原语统一在此把关——无权限打日志并返回 false，调用方据此决定是否
+ * 记账（如 StatusNotificationController 不置 postedThisSession，等待授权事件补投）。
+ */
+internal fun notificationPermissionGate(context: Context, source: String): Boolean {
+    if (hasNotificationPermission(context)) return true
+    Log.w(TAG, "$source skipped: POST_NOTIFICATIONS not granted (notification invisible)")
+    return false
+}
+
 /** 创建通知渠道（Android O+；幂等，重复创建无害）。低优先级 → 静默常驻、不响铃不打扰。 */
 private fun createStatusNotificationChannel(context: Context) {
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
@@ -114,9 +126,10 @@ private fun createStatusNotificationChannel(context: Context) {
         .createNotificationChannel(channel)
 }
 
-/** 投递常驻状态通知。调用方需先确认 [hasNotificationPermission]，否则被系统静默丢弃。 */
-fun showStatusNotification(context: Context) {
-    try {
+/** 投递常驻状态通知。权限门在内部（[notificationPermissionGate]），无权限静默返回 false。 */
+fun showStatusNotification(context: Context): Boolean {
+    if (!notificationPermissionGate(context, "status")) return false
+    return try {
         createStatusNotificationChannel(context)
         val intent =
             buildManagerOpenIntent(context).apply { flags = Intent.FLAG_ACTIVITY_SINGLE_TOP }
@@ -152,10 +165,12 @@ fun showStatusNotification(context: Context) {
             }
         NotificationManagerCompat.from(context).notify(STATUS_NOTIFICATION_ID, notification)
         Log.i(TAG, "status notification posted (id=$STATUS_NOTIFICATION_ID)")
+        true
     } catch (e: Exception) {
         // 权限事后被撤销等场景 notify() 抛 SecurityException：投递失败不影响主流程，
         // 但留 logcat 便于诊断「通知不出现」。
         Log.w(TAG, "showStatusNotification failed: $e", e)
+        false
     }
 }
 
