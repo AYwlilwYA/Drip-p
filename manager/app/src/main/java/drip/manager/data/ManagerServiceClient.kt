@@ -82,6 +82,13 @@ object ManagerServiceClient {
             protocolMismatch = false
             // 进程级广播检测兜底（appContext 通常由 MainActivity.init 先设置，此处防御）。
             appContext?.let { ModuleInstallWatcher.ensureRegistered(it) }
+            // 常驻通知前移：进程注入成功（connected 建立）即发，先于/不等 MainActivity。
+            // 无通知权限时跳过（MainActivity/Settings 会发起授权请求，授权后补发）。
+            appContext?.let { ctx ->
+                if (hasNotificationPermission(ctx) && isStatusNotificationEnabled()) {
+                    showStatusNotification(ctx)
+                }
+            }
             log("inject", "injected binder accepted, protocol=$PROTOCOL_VERSION")
         } catch (e: Throwable) {
             log("inject", "error: $e")

@@ -144,16 +144,11 @@ private fun ManagerApp(
     }
 
     LaunchedEffect(Unit) {
+        // 解耦（2026-09-06）：进程级常驻后台（模块事件 watcher / 失败轮询）统一由
+        // DripManagerApp.onCreate 在进程 bind 时 bootstrap，不再依赖本 Activity 是否进入。
+        // 这里只做 UI 侧：初始化 client 引用 + 连接（注入后即真实数据）+ 权限请求。
         ManagerServiceClient.init(appContext)
         ManagerServiceClient.connect()
-        // 进程级常驻注册应用安装/更新监听（幂等）。不再随 Activity 销毁注销——
-        // 寄生模式下 Activity 退出后进程被 daemon 保活，广播检测保持在线；独立安装进程
-        // 存活期间同样保持，进程死亡后 receiver 由系统自动回收。
-        ModuleInstallWatcher.ensureRegistered(appContext)
-        // 模块加载失败增量检测（寄生/独立均适用）。
-        ModuleFailureWatcher.startWatching(appContext)
-        // M5：注入失败检测（relay_fail / bridge_fail 标记 → 通知 + 自动 dumpLogs）。
-        InjectionFailureWatcher.startWatching(appContext)
         // M3e：daemon 开关为开时投递常驻状态通知（无权限则请求，授权后补发）。
         if (ManagerServiceClient.isStatusNotificationEnabled()) {
             if (hasNotificationPermission(appContext)) {

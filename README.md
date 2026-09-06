@@ -7,6 +7,7 @@ Drip：Xposed 兼容的注入框架，在LSPlant的基础上实现了较好的�
 - 兼容 libxposed API 100 / 101 / 102，以及 legacy 82 / 93
 - 按应用作用域配置，支持多用户（应用分身）
 - 提供 CLI 工具管理模块
+- 模块独立日志：每个 Xposed 模块（应用）日志独立落盘、日志页独立展示（XposedBridge.log 采集，直接 Log 不采集）
 - 完全静默模式（无任何日志输出）
 - 注入与 hook 链路可观测
 
