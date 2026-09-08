@@ -3,13 +3,13 @@ package drip.manager.ui.page
 
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.net.Uri
 import android.provider.Settings
 import android.widget.Toast
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
-import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -32,6 +32,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.OpenInNew
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.outlined.Build
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.FilterList
 import androidx.compose.material.icons.outlined.Info
@@ -73,14 +74,16 @@ import drip.manager.ui.component.PillChip
 import drip.manager.ui.component.SearchField
 import drip.manager.ui.component.SheetAction
 import drip.manager.ui.component.StatusPill
+import drip.manager.ui.component.ToggleRow
 import java.util.LinkedHashMap
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-/** 模块行 UI 数据：契约 ModuleInfo + 本地解析的 scope 预览标签 */
+/** 模块行 UI 数据：契约 ModuleInfo + 本地解析的 scope 预览（包名 + 标签，同序） */
 private data class UiModule(
     val info: drip.manager.ModuleInfo,
+    val scopePackages: List<String>,
     val scopeLabels: List<String>,
 )
 
@@ -115,9 +118,10 @@ fun ModulesScreen(
             // 显示所有已安装的 Xposed 模块（含未启用的），enabled 状态由
             // ModuleInfo.enabled 区分；scope 预览标签本地解析。
             for (info in ManagerServiceClient.getAllModules()) {
-                val labels = ManagerServiceClient.getModuleScope(info.packageName)
-                    .map { resolveAppLabel(context, it.appPackageName) }
-                list += UiModule(info, labels)
+                val entries = ManagerServiceClient.getModuleScope(info.packageName)
+                val labels = entries.map { resolveAppLabel(context, it.appPackageName) }
+                val pkgs = entries.map { it.appPackageName }
+                list += UiModule(info, pkgs, labels)
             }
             list
         }
@@ -271,6 +275,31 @@ private fun resolveAppLabel(context: Context, packageName: String): String = try
     packageName
 }
 
+/** 打开模块本体 App 主界面：优先 launcher intent；模块隐藏桌面入口（无 LAUNCHER filter）时，
+ * 回退直接启动包内第一个 exported activity（manifest 顺序主 activity 靠前）。返回是否成功。
+ * 2026-09-06：FAB / 长按「打开应用」共用——隐藏入口的模块也需能直达主界面。 */
+fun openModuleApp(context: Context, packageName: String): Boolean {
+    try {
+        context.packageManager.getLaunchIntentForPackage(packageName)?.let { i ->
+            context.startActivity(i)
+            return true
+        }
+    } catch (_: Throwable) {
+        // 落到兜底
+    }
+    try {
+        val info = context.packageManager.getPackageInfo(packageName, PackageManager.GET_ACTIVITIES)
+        val main = info.activities?.firstOrNull { it.exported }
+        if (main != null) {
+            context.startActivity(Intent().setClassName(packageName, main.name))
+            return true
+        }
+    } catch (_: Throwable) {
+        // ignore
+    }
+    return false
+}
+
 /** 模块应用图标：本地 PackageManager 按包名取真实图标，内存 LRU 缓存复用（同 ScopeScreen 模式），取不到回退首字母占位。 */
 @Composable
 private fun ModuleAppIcon(
@@ -391,19 +420,16 @@ private fun ModuleRow(
                     horizontalArrangement = Arrangement.spacedBy(4.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    module.scopeLabels.take(3).forEach { label ->
+                    // 2026-09-06：作用域预览改真实应用图标（原首字母圆）；scope 含 "system"/跨 user
+                    // 取不到图标时 ModuleAppIcon 内部回退首字母占位。
+                    module.scopePackages.zip(module.scopeLabels).take(3).forEach { (pkg, label) ->
                         Box(
                             modifier = Modifier
                                 .size(20.dp)
-                                .clip(CircleShape)
-                                .background(MaterialTheme.colorScheme.secondaryContainer),
+                                .clip(CircleShape),
                             contentAlignment = Alignment.Center,
                         ) {
-                            Text(
-                                text = label.firstOrNull()?.uppercase() ?: "?",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSecondaryContainer,
-                            )
+                            ModuleAppIcon(pkg, label, 20.dp, iconCache)
                         }
                     }
                     if (module.scopeLabels.size > 3) {
@@ -428,6 +454,14 @@ private fun ModuleActionSheet(
     onDismiss: () -> Unit,
 ) {
     val context = LocalContext.current
+    // M20 兼容性增强豁免：进卡（bottom sheet 打开）时从 daemon 读当前初值（IO 线程），
+    // 切换即调 daemon；PRISTINE 需目标进程重启才生效，由 Toast 提示（同 B2 开关语义）。
+    var compatPristine by remember(module.packageName) { mutableStateOf(false) }
+    LaunchedEffect(module.packageName) {
+        compatPristine = withContext(Dispatchers.IO) {
+            ManagerServiceClient.isModuleCompatPristine(module.packageName)
+        }
+    }
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(Modifier.verticalScroll(rememberScrollState()).padding(bottom = 24.dp)) {
             Row(
@@ -456,19 +490,28 @@ private fun ModuleActionSheet(
                 modifier = Modifier.padding(start = 24.dp, end = 24.dp, bottom = 8.dp),
             )
             HorizontalDivider(Modifier.padding(vertical = 8.dp))
+            ToggleRow(
+                title = "兼容性增强（丧失隐藏性能）",
+                subtitle = "开启后该模块及其作用域应用豁免混淆（框架与方法名保留原名，被注入进程失去隐藏性）；同进程其它模块一并降级",
+                icon = Icons.Outlined.Build,
+                checked = compatPristine,
+                onCheckedChange = { newValue ->
+                    compatPristine = newValue
+                    ManagerServiceClient.setModuleCompatPristine(module.packageName, newValue)
+                    Toast.makeText(
+                        context,
+                        "已${if (newValue) "开启" else "关闭"}，重启该模块作用域进程后生效",
+                        Toast.LENGTH_SHORT,
+                    ).show()
+                },
+            )
+            HorizontalDivider(Modifier.padding(vertical = 8.dp))
             SheetAction(
                 title = "打开应用",
                 icon = Icons.AutoMirrored.Outlined.OpenInNew,
                 onClick = {
-                    try {
-                        val intent = context.packageManager.getLaunchIntentForPackage(module.packageName)
-                        if (intent != null) {
-                            context.startActivity(intent)
-                        } else {
-                            Toast.makeText(context, "未找到可启动的应用入口", Toast.LENGTH_SHORT).show()
-                        }
-                    } catch (_: Throwable) {
-                        Toast.makeText(context, "无法打开应用", Toast.LENGTH_SHORT).show()
+                    if (!openModuleApp(context, module.packageName)) {
+                        Toast.makeText(context, "未找到可启动的应用入口", Toast.LENGTH_SHORT).show()
                     }
                     onDismiss()
                 },

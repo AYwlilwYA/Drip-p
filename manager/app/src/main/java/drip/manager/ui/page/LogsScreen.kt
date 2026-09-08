@@ -19,10 +19,13 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.outlined.WrapText
+import androidx.compose.material.icons.outlined.DeleteSweep
 import androidx.compose.material.icons.outlined.RestartAlt
 import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material.icons.outlined.Visibility
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -86,6 +89,7 @@ fun LogsScreen(
     var moduleLoading by remember { mutableStateOf(false) }
     var tagCounts by remember { mutableStateOf<List<Pair<String, Int>>>(emptyList()) }
     var detailTag by remember { mutableStateOf<String?>(null) }
+    var clearConfirm by remember { mutableStateOf(false) }
 
     var initialTagApplied by remember { mutableStateOf(false) }
     LaunchedEffect(initialTag, parsedLines) {
@@ -150,6 +154,13 @@ fun LogsScreen(
                     else -> "共 ${parts.size} 个 part · ${parsedLines.size} 条日志"
                 },
                 actions = {
+                    IconButton(onClick = { clearConfirm = true }) {
+                        Icon(
+                            Icons.Outlined.DeleteSweep,
+                            contentDescription = "清空日志",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                     IconButton(onClick = { lineWrap = !lineWrap }) {
                         Icon(
                             Icons.AutoMirrored.Outlined.WrapText,
@@ -284,6 +295,28 @@ fun LogsScreen(
                 refreshKey++
             },
             onDismiss = { settingsOpen = false },
+        )
+    }
+
+    // 清空日志确认框（2026-09-06）
+    if (clearConfirm) {
+        AlertDialog(
+            onDismissRequest = { clearConfirm = false },
+            title = { Text("清空日志") },
+            text = { Text("将删除全部日志（主日志 + 模块日志）并开启新日志，此操作不可恢复。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    val ok = ManagerServiceClient.clearLogs()
+                    Toast.makeText(
+                        context,
+                        if (ok) "日志已清空" else "清空失败（未连接 daemon）",
+                        Toast.LENGTH_SHORT,
+                    ).show()
+                    clearConfirm = false
+                    refreshKey++
+                }) { Text("清空") }
+            },
+            dismissButton = { TextButton(onClick = { clearConfirm = false }) { Text("取消") } },
         )
     }
 }

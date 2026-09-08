@@ -2,12 +2,14 @@
 package drip.manager.ui.page
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -43,17 +45,38 @@ fun TerminalLogLine(line: LogLine, lineWrap: Boolean, fontSize: Float = 12f) {
     } else {
         line.message
     }
-    Text(
-        text = text,
-        style = MaterialTheme.typography.bodySmall.copy(
-            fontFamily = FontFamily.Monospace,
-            fontSize = fontSize.sp,
-            lineHeight = (fontSize + 4f).sp,
-        ),
-        color = color,
-        maxLines = if (lineWrap) Int.MAX_VALUE else 1,
-        modifier = Modifier.padding(horizontal = 16.dp, vertical = 1.dp),
+    val textStyle = MaterialTheme.typography.bodySmall.copy(
+        fontFamily = FontFamily.Monospace,
+        fontSize = fontSize.sp,
+        lineHeight = (fontSize + 4f).sp,
     )
+    if (lineWrap) {
+        Text(
+            text = text,
+            style = textStyle,
+            color = color,
+            maxLines = Int.MAX_VALUE,
+            softWrap = true,
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 1.dp),
+        )
+    } else {
+        // 2026-09-06 #8：单行模式 softWrap=false + 横向滚动——行尾放不下的长单词不再被软换行挪到
+        // 第二行、再被 maxLines=1 整行截断（导致整词消失）；超宽内容可横向滚动读到行尾。
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
+        ) {
+            Text(
+                text = text,
+                style = textStyle,
+                color = color,
+                maxLines = 1,
+                softWrap = false,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 1.dp),
+            )
+        }
+    }
 }
 
 /** 卡片样式行：一条一卡，级别色条 + 分行显示。 */

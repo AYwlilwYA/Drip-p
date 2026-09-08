@@ -41,8 +41,8 @@ import drip.manager.data.hasNotificationPermission
 import drip.manager.ui.component.GroupCard
 import drip.manager.ui.component.SettingRow
 
-/** 模块仓库地址（占位，用户可自行修改）。 */
-private const val DRIP_GITHUB_URL = "https://github.com/AYwlilwYA/Drip"
+/** Xposed 模块仓库地址（LSPosed 官方仓库；2026-09-06 由 GitHub 项目页改为仓库）。 */
+private const val XP_MODULE_REPO_URL = "https://modules.lsposed.org/"
 
 /** Settings 页：框架开关走 daemon（未连接留痕），主题开关本地，快捷方式真实创建。 */
 @Composable
@@ -70,7 +70,6 @@ fun SettingsScreen(
                 verboseLog = ManagerServiceClient.isVerboseLogEnabled(),
                 forceAppIcon = ManagerServiceClient.isForcedLauncherIcons(),
                 loggingSilenced = ManagerServiceClient.isLoggingSilenced(),
-                b2Enabled = ManagerServiceClient.isB2Enabled(),
             ),
         )
     }
@@ -154,20 +153,6 @@ fun SettingsScreen(
             )
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
             SettingRow(
-                title = "方法名随机化 (B2)",
-                subtitle = "开 = 更强隐藏；遇部分模块不可用时可关闭，丧失部分隐藏性能",
-                trailing = {
-                    Switch(
-                        checked = settings.b2Enabled,
-                        onCheckedChange = { enabled ->
-                            ManagerServiceClient.setB2Enabled(enabled)
-                            onSettingsChange(settings.copy(b2Enabled = enabled))
-                        },
-                    )
-                },
-            )
-            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-            SettingRow(
                 title = "创建桌面快捷方式",
                 onClick = { createShortcut(context) },
                 trailing = {
@@ -207,9 +192,9 @@ fun SettingsScreen(
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
             SettingRow(
                 title = "模块仓库",
-                subtitle = "GitHub",
+                subtitle = "Xposed 模块仓库",
                 onClick = {
-                    val intent = Intent(Intent.ACTION_VIEW, android.net.Uri.parse(DRIP_GITHUB_URL))
+                    val intent = Intent(Intent.ACTION_VIEW, android.net.Uri.parse(XP_MODULE_REPO_URL))
                     context.startActivity(intent)
                 },
                 trailing = {

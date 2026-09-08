@@ -131,6 +131,11 @@ object ManagerServiceClient {
     fun getIncludeNewApps(pkg: String): Boolean = call("getIncludeNewApps", false) { it.getIncludeNewApps(pkg) }
     fun setIncludeNewApps(pkg: String, value: Boolean): Boolean =
         call("setIncludeNewApps", false) { it.setIncludeNewApps(pkg, value); true }
+    // ==== M20 per-module compat pristine 豁免 ====
+    fun isModuleCompatPristine(pkg: String): Boolean =
+        call("isModuleCompatPristine", false) { it.isModuleCompatPristine(pkg) }
+    fun setModuleCompatPristine(pkg: String, enabled: Boolean): Boolean =
+        call("setModuleCompatPristine", false) { it.setModuleCompatPristine(pkg, enabled); true }
     fun getModuleLoadFailures(): List<ModuleLoadFailure> =
         call("getModuleLoadFailures", emptyList()) { it.moduleLoadFailures }
     fun getGlobalMode(): Boolean = call("getGlobalMode", false) { it.globalMode }
@@ -146,6 +151,8 @@ object ManagerServiceClient {
         call("getLiveLogPart", null) { it.getLiveLogPart(verbose) }
     fun startNewLogPart(verbose: Boolean): Boolean =
         call("startNewLogPart", false) { it.startNewLogPart(verbose); true }
+    /** 清空全部日志（主 part + 模块日志），daemon 重置并从新 part 开始。 */
+    fun clearLogs(): Boolean = call("clearLogs", false) { it.clearLogs(); true }
 
     /** Fallback：PFD 传输 DeadObjectException 时，返回日志内容字符串（≤900KB）。 */
     fun getLogPartContent(verbose: Boolean, name: String): String? =
@@ -206,12 +213,6 @@ object ManagerServiceClient {
     fun isLoggingSilenced(): Boolean = call("isLoggingSilenced", false) { it.isLoggingSilenced() }
     fun setLoggingSilenced(enabled: Boolean): Boolean =
         call("setLoggingSilenced", false) { it.setLoggingSilenced(enabled); true }
-
-    // ==== B2 方法名随机化（全局，默认开）====
-    // 未连接 fallback=true（与 daemon 无记录默认一致，UI 不误显示关）。
-    fun isB2Enabled(): Boolean = call("isB2Enabled", true) { it.isB2Enabled() }
-    fun setB2Enabled(enabled: Boolean): Boolean =
-        call("setB2Enabled", true) { it.setB2Enabled(enabled); true }
 
     // ==== 3.5.2 转储日志 ====
     fun dumpLogs(): String? = call("dumpLogs", null) { it.dumpLogs() }

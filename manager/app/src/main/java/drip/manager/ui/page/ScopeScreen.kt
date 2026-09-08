@@ -9,6 +9,7 @@ import android.graphics.Bitmap
 import android.os.Bundle
 import android.widget.Toast
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -27,6 +28,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.automirrored.outlined.PlaylistAdd
 import androidx.compose.material.icons.automirrored.outlined.Sort
 import androidx.compose.material.icons.outlined.AutoAwesome
@@ -60,6 +62,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -197,8 +200,14 @@ fun ScopeScreen(
         includeNewApps = includeNew
         initialKeys = initial
         checkedKeys = initial
-        // M8：scope 包含 "system" 时自动追加系统应用列表（静态作用域声明或用户手动添加均触发）
-        includeSystemApps = scope.any { it.appPackageName == "system" }
+        // 2026-09-06：作用域含系统应用（scope="system" 字面量或具体系统包名）时自动开启「系统应用」显示，
+        // 否则系统应用被 showSystem=false 过滤隐藏；静态作用域无过滤抽屉更不可见——drip-manager-ui-20260906.md
+        // M18: 与 daemon 归一化判据对齐——系统框架标识认 'android'（UI/scope 表落库）与 'system'（模块 staticScope 声明）。
+        val scopePkgs = initial.mapNotNull { parseKey(it).first }.toSet()
+        includeSystemApps = scope.any { it.appPackageName == "android" || it.appPackageName == "system" }
+        if (includeSystemApps || list.any { it.system && it.packageName in scopePkgs }) {
+            showSystem = true
+        }
         scopeLoaded = true
         loaded = true
     }
@@ -255,7 +264,9 @@ fun ScopeScreen(
                                     (showModules || !app.isModule)
                             )) &&
                     (selectedUserIdx == 0 ||
-                            app.userId == if (selectedUserIdx == 1) 0 else 10)
+                            app.userId == if (selectedUserIdx == 1) 0 else 10) &&
+                    // 静态作用域：只展示作用域内成员（只读；系统成员由上方 #2 自动 showSystem 可见）
+                    (!isStaticScope || key(app.packageName, app.userId) in checkedKeys)
         }
         // 统一三分区：已选择 > 推荐 > 其他，各分区内部按当前 sortOrder 排（partition/sortedBy 均稳定）。
         // 相关度=原列表相对顺序，其余按 label/packageName/installTime/updateTime；
@@ -279,6 +290,8 @@ fun ScopeScreen(
     val removed = (initialKeys - checkedKeys).size
     val dirty = added > 0 || removed > 0
 
+    // 2026-09-06：外包 Box 承载右下角「启动该模块」FAB overlay（Column 内无法绝对悬浮）。
+    Box(Modifier.fillMaxSize()) {
     Column(Modifier.fillMaxSize()) {
         // 单行紧凑顶栏
         Row(
@@ -466,6 +479,34 @@ fun ScopeScreen(
                     }
                 },
             )
+        }
+    }
+
+        // 右下角「启动该模块」FAB（圆角方块 + 播放三角）：打开模块本体 App；
+        // dirty（改动待应用）时隐藏，避免遮挡底部 ApplyBar —— 2026-09-06。
+        if (!dirty) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(20.dp)
+                    .clip(RoundedCornerShape(18.dp))
+                    .background(MaterialTheme.colorScheme.primaryContainer)
+                    .clickable {
+                        // 2026-09-06：launcher 隐藏入口的模块 → openModuleApp 兜底直达主 activity
+                        if (!openModuleApp(context, module.packageName)) {
+                            Toast.makeText(context, "未找到可启动的应用入口", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                    .padding(16.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    Icons.Filled.PlayArrow,
+                    contentDescription = "启动模块",
+                    tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                    modifier = Modifier.size(26.dp),
+                )
+            }
         }
     }
 

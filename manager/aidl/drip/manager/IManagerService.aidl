@@ -40,6 +40,8 @@ interface IManagerService {
     ParcelFileDescriptor getLogPart(boolean verbose, String name);
     ParcelFileDescriptor getLiveLogPart(boolean verbose);
     void startNewLogPart(boolean verbose);
+    // 2026-09-06: 清空全部日志（主 part + 模块日志），重置并从新 part 开始
+    void clearLogs();
 
     // 3.4 设备视角
     boolean softReboot();
@@ -117,4 +119,10 @@ interface IManagerService {
     // system_server 恒 P0，不受本开关影响。末尾追加，wire-compatible，不 bump PROTOCOL_VERSION。
     boolean isB2Enabled();
     void setB2Enabled(boolean enabled);
+
+    // M20 per-module「兼容性增强」豁免：开启后该模块作用域内目标进程整链 PRISTINE
+    //（framework/模块 dex 原名），消除该模块对混淆随机名的一切失配；被注入进程丧失隐藏性。
+    // 末尾追加，wire-compatible，不 bump PROTOCOL_VERSION。
+    boolean isModuleCompatPristine(String packageName);
+    void setModuleCompatPristine(String packageName, boolean enabled);
 }
