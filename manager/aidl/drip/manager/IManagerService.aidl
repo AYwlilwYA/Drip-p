@@ -125,4 +125,15 @@ interface IManagerService {
     // 末尾追加，wire-compatible，不 bump PROTOCOL_VERSION。
     boolean isModuleCompatPristine(String packageName);
     void setModuleCompatPristine(String packageName, boolean enabled);
+
+    // M22 per-module「兼容性增强」豁免档位（int compatMode）：
+    //   0 = 不豁免（模块作用域进程 serve B2：类名+方法名随机，隐藏最强，默认）；
+    //   1 = P0 混淆（进程 serve framework.dex.b1：类名随机 + 方法名原名 + 模块 raw ——
+    //       UI「兼容性增强」开、未开「最大兼容」）；
+    //   2 = 完全不混淆 PRISTINE（进程 serve framework.dex.orig 全原名 + 模块 raw ——
+    //       UI「兼容性增强」+「最大兼容」都开，原 M20 pristine 语义）。
+    // 旧布尔 isModuleCompatPristine/setModuleCompatPristine 保留（wire 兼容）：其语义即档位 2。
+    // 末尾追加，wire-compatible，不 bump PROTOCOL_VERSION。
+    int getModuleCompatMode(String packageName);
+    void setModuleCompatMode(String packageName, int compatMode);
 }

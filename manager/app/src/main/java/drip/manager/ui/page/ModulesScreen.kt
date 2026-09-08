@@ -454,12 +454,16 @@ private fun ModuleActionSheet(
     onDismiss: () -> Unit,
 ) {
     val context = LocalContext.current
-    // M20 兼容性增强豁免：进卡（bottom sheet 打开）时从 daemon 读当前初值（IO 线程），
-    // 切换即调 daemon；PRISTINE 需目标进程重启才生效，由 Toast 提示（同 B2 开关语义）。
-    var compatPristine by remember(module.packageName) { mutableStateOf(false) }
+    // M22「兼容性增强」豁免档位 int（daemon CompatMode：0=关 / 1=P0 / 2=完全不混淆）。UI 投影为
+    // 两个开关：兼容性增强开 = 档位 != 0，开时下方展开「最大兼容」；最大兼容开 = 档位 == 2。
+    // 进卡（bottom sheet 打开）从 daemon 读初值（IO 线程），切换即调 daemon；档位变化需目标
+    // 进程重启才生效，由 Toast 提示（同开关语义）。
+    val modeP0 = 1
+    val modePristine = 2
+    var compatMode by remember(module.packageName) { mutableStateOf(0) }
     LaunchedEffect(module.packageName) {
-        compatPristine = withContext(Dispatchers.IO) {
-            ManagerServiceClient.isModuleCompatPristine(module.packageName)
+        compatMode = withContext(Dispatchers.IO) {
+            ManagerServiceClient.getModuleCompatMode(module.packageName)
         }
     }
     ModalBottomSheet(onDismissRequest = onDismiss) {
@@ -491,20 +495,37 @@ private fun ModuleActionSheet(
             )
             HorizontalDivider(Modifier.padding(vertical = 8.dp))
             ToggleRow(
-                title = "兼容性增强（丧失隐藏性能）",
-                subtitle = "开启后该模块及其作用域应用豁免混淆（框架与方法名保留原名，被注入进程失去隐藏性）；同进程其它模块一并降级",
+                title = "兼容性增强",
+                subtitle = "开启后该模块的作用域框架保留类名隐藏、不再混淆方法名，兼容更多模块；同进程其它模块一并降级",
                 icon = Icons.Outlined.Build,
-                checked = compatPristine,
-                onCheckedChange = { newValue ->
-                    compatPristine = newValue
-                    ManagerServiceClient.setModuleCompatPristine(module.packageName, newValue)
+                checked = compatMode != 0,
+                onCheckedChange = { on ->
+                    compatMode = if (on) modeP0 else 0
+                    ManagerServiceClient.setModuleCompatMode(module.packageName, compatMode)
                     Toast.makeText(
                         context,
-                        "已${if (newValue) "开启" else "关闭"}，重启该模块作用域进程后生效",
+                        "已${if (on) "开启" else "关闭"}，重启该模块作用域进程后生效",
                         Toast.LENGTH_SHORT,
                     ).show()
                 },
             )
+            if (compatMode != 0) {
+                ToggleRow(
+                    title = "最大兼容",
+                    subtitle = "兼容性增强仍然不生效时打开：作用域框架与方法名全部保留原名，兼容性最强、隐藏性能最弱",
+                    icon = Icons.Outlined.Build,
+                    checked = compatMode == modePristine,
+                    onCheckedChange = { on ->
+                        compatMode = if (on) modePristine else modeP0
+                        ManagerServiceClient.setModuleCompatMode(module.packageName, compatMode)
+                        Toast.makeText(
+                            context,
+                            "已${if (on) "开启" else "关闭"}，重启该模块作用域进程后生效",
+                            Toast.LENGTH_SHORT,
+                        ).show()
+                    },
+                )
+            }
             HorizontalDivider(Modifier.padding(vertical = 8.dp))
             SheetAction(
                 title = "打开应用",

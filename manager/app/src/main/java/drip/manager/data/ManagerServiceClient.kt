@@ -136,6 +136,12 @@ object ManagerServiceClient {
         call("isModuleCompatPristine", false) { it.isModuleCompatPristine(pkg) }
     fun setModuleCompatPristine(pkg: String, enabled: Boolean): Boolean =
         call("setModuleCompatPristine", false) { it.setModuleCompatPristine(pkg, enabled); true }
+
+    // ==== M22 per-module「兼容性增强」档位（int：0=B2 / 1=P0 / 2=PRISTINE 完全不混淆）====
+    fun getModuleCompatMode(pkg: String): Int =
+        call("getModuleCompatMode", 0) { it.getModuleCompatMode(pkg) }
+    fun setModuleCompatMode(pkg: String, mode: Int): Boolean =
+        call("setModuleCompatMode", false) { it.setModuleCompatMode(pkg, mode); true }
     fun getModuleLoadFailures(): List<ModuleLoadFailure> =
         call("getModuleLoadFailures", emptyList()) { it.moduleLoadFailures }
     fun getGlobalMode(): Boolean = call("getGlobalMode", false) { it.globalMode }

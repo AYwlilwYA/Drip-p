@@ -1,7 +1,7 @@
 id=drip
 name=Drip
-version=2.3.0
-versionCode=6
+version=2.3.1
+versionCode=7
 author=AY
 description=Drip Xposed-compatible hiding framework
 minApi=27
