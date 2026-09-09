@@ -142,6 +142,13 @@ object ManagerServiceClient {
         call("getModuleCompatMode", 0) { it.getModuleCompatMode(pkg) }
     fun setModuleCompatMode(pkg: String, mode: Int): Boolean =
         call("setModuleCompatMode", false) { it.setModuleCompatMode(pkg, mode); true }
+
+    // ==== M24 随机 log-tag 开关（默认开）====
+    fun isRandomLogTagEnabled(): Boolean =
+        call("isRandomLogTagEnabled", true) { it.isRandomLogTagEnabled() }
+    fun setRandomLogTagEnabled(enabled: Boolean): Boolean =
+        call("setRandomLogTagEnabled", false) { it.setRandomLogTagEnabled(enabled); true }
+
     fun getModuleLoadFailures(): List<ModuleLoadFailure> =
         call("getModuleLoadFailures", emptyList()) { it.moduleLoadFailures }
     fun getGlobalMode(): Boolean = call("getGlobalMode", false) { it.globalMode }

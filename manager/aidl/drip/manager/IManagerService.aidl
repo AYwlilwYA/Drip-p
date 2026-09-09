@@ -136,4 +136,10 @@ interface IManagerService {
     // 末尾追加，wire-compatible，不 bump PROTOCOL_VERSION。
     int getModuleCompatMode(String packageName);
     void setModuleCompatMode(String packageName, int compatMode);
+
+    // M24 随机 log-tag 开关（默认开）：真实生效视图 = config/log_tag 文件是否存在；关闭时
+    // 写 config/log_tag_disabled 标记（安装脚本见该标记不重新预写，防升级重装把「关」拉回开）。
+    // 末尾追加，wire-compatible，不 bump PROTOCOL_VERSION。
+    boolean isRandomLogTagEnabled();
+    void setRandomLogTagEnabled(boolean enabled);
 }

@@ -68,6 +68,7 @@ fun SettingsScreen(
             settings.copy(
                 statusNotification = ManagerServiceClient.isStatusNotificationEnabled(),
                 verboseLog = ManagerServiceClient.isVerboseLogEnabled(),
+                randomLogTag = ManagerServiceClient.isRandomLogTagEnabled(),
                 forceAppIcon = ManagerServiceClient.isForcedLauncherIcons(),
                 loggingSilenced = ManagerServiceClient.isLoggingSilenced(),
             ),
@@ -120,6 +121,25 @@ fun SettingsScreen(
                         onCheckedChange = {
                             ManagerServiceClient.setVerboseLogEnabled(it)
                             onSettingsChange(settings.copy(verboseLog = it))
+                        },
+                    )
+                },
+            )
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            SettingRow(
+                title = "随机日志标签",
+                subtitle = "随机化 logcat tag 防按 Drip 过滤；切换后重启应用生效",
+                trailing = {
+                    Switch(
+                        checked = settings.randomLogTag,
+                        onCheckedChange = { enabled ->
+                            ManagerServiceClient.setRandomLogTagEnabled(enabled)
+                            onSettingsChange(settings.copy(randomLogTag = enabled))
+                            Toast.makeText(
+                                context,
+                                "重启目标应用 / 重启 daemon 后生效",
+                                Toast.LENGTH_SHORT,
+                            ).show()
                         },
                     )
                 },
