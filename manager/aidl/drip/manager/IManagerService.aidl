@@ -9,6 +9,7 @@ import drip.manager.IFrameworkDumpReceiver;
 import drip.manager.ModuleInfo;
 import drip.manager.ModuleLoadFailure;
 import drip.manager.ScopeEntry;
+import drip.manager.ScopeRequestInfo;
 
 interface IManagerService {
 
@@ -142,4 +143,10 @@ interface IManagerService {
     // 末尾追加，wire-compatible，不 bump PROTOCOL_VERSION。
     boolean isRandomLogTagEnabled();
     void setRandomLogTagEnabled(boolean enabled);
+
+    // M25 动态作用域：manager 轮询 pending 的作用域请求（模块 app 运行时经 requestScope 触发，
+    // daemon 登记 outstanding），获知后弹「批准/拒绝」通知 → respondScopeRequest 落决定。
+    // 末尾追加，wire-compatible，不 bump PROTOCOL_VERSION。
+    List<ScopeRequestInfo> getPendingScopeRequests();
+    void respondScopeRequest(int requestId, boolean allow);
 }

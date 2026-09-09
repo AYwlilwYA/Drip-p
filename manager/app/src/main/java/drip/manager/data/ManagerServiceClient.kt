@@ -15,6 +15,7 @@ import drip.manager.IManagerService
 import drip.manager.ModuleInfo
 import drip.manager.ModuleLoadFailure
 import drip.manager.ScopeEntry
+import drip.manager.ScopeRequestInfo
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -154,6 +155,13 @@ object ManagerServiceClient {
     fun getGlobalMode(): Boolean = call("getGlobalMode", false) { it.globalMode }
     fun setGlobalMode(enabled: Boolean): Boolean =
         call("setGlobalMode", false) { it.setGlobalMode(enabled); true }
+
+    // ==== M25 动态作用域：pending 请求查询 / 响应 ====
+    // （ScopeRequestWatcher 轮询 → 带「批准/拒绝」按钮通知 → action 广播 → respondScopeRequest。）
+    fun getPendingScopeRequests(): List<ScopeRequestInfo> =
+        call("getPendingScopeRequests", emptyList()) { it.getPendingScopeRequests() }
+    fun respondScopeRequest(requestId: Int, allow: Boolean): Boolean =
+        call("respondScopeRequest", false) { it.respondScopeRequest(requestId, allow); true }
 
     // ==== 3.3 日志 ====
     fun getLogParts(verbose: Boolean): List<String> =

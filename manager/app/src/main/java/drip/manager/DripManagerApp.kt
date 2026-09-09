@@ -6,6 +6,7 @@ import drip.manager.data.InjectionFailureWatcher
 import drip.manager.data.ManagerServiceClient
 import drip.manager.data.ModuleFailureWatcher
 import drip.manager.data.ModuleInstallWatcher
+import drip.manager.data.ScopeRequestWatcher
 import drip.manager.data.StatusNotificationController
 
 /**
@@ -39,6 +40,8 @@ class DripManagerApp : Application() {
             // 模块加载失败 / 注入失败轮询（各自幂等，scope 非空即返回）。
             ModuleFailureWatcher.startWatching(this)
             InjectionFailureWatcher.startWatching(this)
+            // M25 动态作用域：模块运行时作用域请求轮询 + 「批准/拒绝」通知（幂等）。
+            ScopeRequestWatcher.startWatching(this)
             Log.i(TAG, "background bootstrap complete (watchers registered)")
         } catch (t: Throwable) {
             // Application.onCreate 抛异常会杀掉宿主/自身进程——必须吞干净。
