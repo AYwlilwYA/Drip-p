@@ -5,3 +5,4 @@ versionCode=12
 author=AY
 description=Drip Xposed-compatible hiding framework
 minApi=27
+updateJson=https://raw.githubusercontent.com/AYwlilwYA/Drip-p/main/update.json
