@@ -24,17 +24,17 @@
 
 API 的类型只在**编译期**需要；运行期的实现由 Drip 框架在目标进程中提供，**不打包进模块 APK**。
 
-使用 Drip 发行包内附带的 stub jar：
+在本仓库 `api/` 目录获取 stub jar（`drip-native-api.jar`）：
 
 ```kotlin
 dependencies {
-    compileOnly(files("<drip>/build/module-lib/drip-native-api.jar"))
+    compileOnly(files("<path>/drip-native-api.jar"))
 }
 ```
 
 `compileOnly` 确保 stub 只参与编译，不进入 APK。
 
-> 📌 stub jar 位于 Drip 源码树 `build/module-lib/drip-native-api.jar`。若该文件不存在，运行 `scripts/build-native-api-stub.sh` 生成。
+> 📌 stub jar 与框架版本对应 —— 升级 Drip 后请同步替换 `api/` 下的 jar。
 
 ---
 

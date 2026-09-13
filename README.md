@@ -17,6 +17,7 @@ Drip：Xposed 兼容的注入框架，在LSPlant的基础上实现了较好的�
 - 随机日志标签：安装即随机化框架日志 tag（防按固定 tag 过滤），Manager 设置页 / `drip_cli log-tag off` 可关闭（默认开启，隐藏性更强）
 - 完全静默模式（无任何日志输出）
 - 注入与 hook 链路可观测
+- native hook 扩展能力：模块可 hook 已加载动态库中的导出符号（APK 内 `Xposed/nativeHook` 入口声明，见 [Native Hook API 契约](api/README.md)）
 
 ## 环境要求
 
