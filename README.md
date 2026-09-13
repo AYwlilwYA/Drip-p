@@ -35,6 +35,10 @@ Drip：Xposed 兼容的注入框架，在LSPlant的基础上实现了较好的�
 - 如果你在使用是,发送了意外的错误,可以向本仓库提交issue(附带转储日志)
 - 不接受只有简单描述的issue
 
+## 模块开发
+
+- [Native Hook API 契约](api/README.md) —— 模块 hook 已加载动态库中的导出符号（APK 内 `Xposed/nativeHook` 入口声明）
+
 ## 开源说明
 
 Drip 采用部分开源策略，在透明与保护核心技术之间取得平衡：
