@@ -101,6 +101,9 @@ public class MyModule implements DripNativeHookModule {
 com.example.MyModule
 ```
 
+> 同一个入口类里可以**同时**用 `hookSymbol` 与 `hookJavaNativeMethod` —— 两者只是同一个
+> `DripNativeHook` 上的两个方法，不需要两个入口。hook Java `native` 方法的例子见 **§11.2**。
+
 ---
 
 ## 5. 包结构
@@ -244,6 +247,10 @@ public interface DripNativeHook {
 
 **`unhook`**：句柄已失效、或不属于本模块时**为无操作**（不抛异常）。
 ⚠️ 避免与目标函数的高频执行并发调用。`unhook` 返回 `void` —— **模块无法感知卸载是否成功**。
+
+**`unhookAll`**：卸载**本模块**当前全部的 hook（`hookSymbol` 与 `hookJavaNativeMethod` 一起），
+等价于对每个存活句柄各调一次 `unhook`。只影响调用方模块自己的 hook，**不会动其它模块的**。
+框架在模块换代 / detach 时也会自动调它，模块一般无需手动调用。
 
 ### 6.3 `NativeCallback`
 
@@ -482,6 +489,8 @@ hook 也**只对你指定的方法生效**，其余方法的行为与返回值�
 6. **`hookJavaNativeMethod` 只能 hook 已经注册过实现（或已被调用过一次）的 native 方法** —— 目标在运行期若还没有 JNI 实现地址，安装会抛 `NativeHookException`；可先让目标方法被调用一次再装。带 `@CriticalNative` 注解的方法**不支持**（其 ABI 没有 `JNIEnv*` 与接收者），安装时会被拒绝。
 7. **作用域**：hook 只在**当前注入进程**内生效，与模块的作用域配置一致。
 8. **回调禁止长时间阻塞**（见 §6.3 线程模型）。
+9. **同一个 native 方法不能被重复 hook** —— 第二次安装会抛 `NativeHookException`（文案含 `method is already hooked`），**不是静默覆盖**。要换回调逻辑，请先 `unhook` 上一个句柄再装（示例见 §11.2-C）。
+10. **与 Java hook 的关系**：同一个方法上，`hookJavaNativeMethod` 与 Java hook（libxposed / legacy）**互不排斥**，实测两侧回调都会触发。但**两者叠加时的先后顺序与返回值合并语义未定义**，不要依赖它们之间的相对顺序。
 
 ---
 
@@ -537,6 +546,8 @@ hook 也**只对你指定的方法生效**，其余方法的行为与返回值�
 
 ## 11. 完整示例
 
+### 11.1 符号 hook（`hookSymbol`）
+
 ```java
 package com.example;
 
@@ -576,6 +587,91 @@ public class MyModule implements DripNativeHookModule {
 
 ```
 com.example.MyModule
+```
+
+### 11.2 Java native 方法 hook（`hookJavaNativeMethod`）
+
+> 下面 A / B / C 是**同一个模块**里的三段片段（A 里的 `intern`、B 里的 `h` 在 C 里继续用），
+> 不是三个独立的类。
+
+**A. 观察型** —— 读 `this` / 实参 / 返回值，不改行为：
+
+```java
+package com.example;
+
+import android.util.Log;
+
+import com.drip.api.nativehook.DripNativeHook;
+import com.drip.api.nativehook.DripNativeHookModule;
+import com.drip.api.nativehook.HookHandle;
+
+import java.lang.reflect.Method;
+
+public class MyNativeModule implements DripNativeHookModule {
+
+    private DripNativeHook hook;
+    private HookHandle internHandle;
+
+    @Override
+    public void onNativeHookAttached(DripNativeHook hook) {
+        this.hook = hook;
+        try {
+            // 目标必须是 native 方法：非 native 会抛 NativeHookException
+            Method intern = String.class.getMethod("intern");   // public native String intern()
+
+            // signature 传 null ⇒ 由框架按方法的 Java 声明推导（此处等价 "ptr ()"）
+            internHandle = hook.hookJavaNativeMethod(intern, null, param -> {
+                Object self = param.getThisObject();  // 实例方法 ⇒ 真实 String；静态方法 ⇒ null
+                Log.i("MyNativeModule", "intern on " + self + " via " + param.getMethod());
+                return param.callOriginal();          // 原样返回真实结果 = 不改行为
+            });
+        } catch (Throwable t) {
+            Log.e("MyNativeModule", "install failed", t);
+        }
+    }
+}
+```
+
+**B. 替换型** —— 按类名 + JNI 描述符定位，指针实参 + 引用类型返回值：
+
+```java
+// android.os.SystemProperties.native_get(String, String) → String（@hide，仅作示例）
+// ⚠️ 类名重载的第 3 个参数是**用于定位方法的 JNI 描述符**，不是 NativeSignature
+//    （两个重载的 signature 语义不同，见 §6.2）。
+HookHandle h = hook.hookJavaNativeMethod(
+        "android.os.SystemProperties",
+        "native_get",
+        "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",
+        param -> {
+            // ⚠️ 引用类型实参拿到的是**地址（Long）**，不是对象 —— 不能当 String 用
+            Long keyPtr = (Long) param.getArg(0);
+
+            // 让目标函数返回 null ⇒ 返回 0L（0 表示 null 地址）
+            // 保持原行为      ⇒ 返回 callOriginal() 给的那个地址（同样是 Long）
+            return param.callOriginal();
+        });
+```
+
+**C. 卸载，以及「同一个方法不能重复 hook」**：
+
+```java
+// 卸载后目标恢复原实现（可用「回调计数不再增长」验证）
+if (h != null && h.isValid()) {
+    hook.unhook(h);
+}
+
+// ⚠️ 同一个方法**不能**重复 hook：第二次会抛 NativeHookException（不是静默覆盖）。
+//    要换回调逻辑，必须先 unhook 上一个句柄，再重新安装。
+HookHandle h2 = hook.hookJavaNativeMethod(intern, null, anotherCallback);
+
+// 一次性清掉本模块的所有 hook
+// hook.unhookAll();
+```
+
+入口文件与 §11.1 完全相同（一个模块一个 `Xposed/nativeHook`，两种能力共用一个入口类）：
+
+```
+com.example.MyNativeModule
 ```
 
 ---
