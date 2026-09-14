@@ -7,7 +7,12 @@
 
 ## 1. 这是什么
 
-除 Java 方法 hook（libxposed / legacy）之外，Drip 另开放一组 **native hook** 能力：**hook 已加载动态库中的导出符号**（例如 `libc.so` 里的某个函数）。
+除 Java 方法 hook（libxposed / legacy）之外，Drip 另开放一组 **native hook** 能力：
+
+1. `hookSymbol` —— hook **已加载动态库中的导出符号**（例如 `libc.so` 里的某个函数）；
+2. `hookJavaNativeMethod` —— hook 一个 **Java `native` 方法**（JNI 方法），回调语义与
+   `hookSymbol` 一致（读 / 改实参、`callOriginal()` 调原实现、按签名写返回值），
+   额外提供 `getThisObject()` / `getMethod()`。
 
 该能力**与 libxposed / legacy API 相互独立**：
 
@@ -156,11 +161,11 @@ public interface DripNativeHook {
     HookHandle hookSymbol(String libName, String symbolName, String signature,
                           int priority, NativeCallback callback);
 
-    /** Hook 一个 Java native 方法（JNI 方法）。【当前版本未提供】 */
+    /** Hook 一个 Java native 方法（JNI 方法）。 */
     HookHandle hookJavaNativeMethod(Method method, String signature,
                                     NativeCallback callback);
 
-    /** 按类名 / 方法名 / JNI 描述符 hook 一个 Java native 方法。【当前版本未提供】 */
+    /** 按类名 / 方法名 / JNI 描述符 hook 一个 Java native 方法。 */
     HookHandle hookJavaNativeMethod(String className, String methodName, String signature,
                                     NativeCallback callback);
 
@@ -194,6 +199,46 @@ public interface DripNativeHook {
 | 目标是框架自身所用库 / 底层函数 | `NativeHookException(... "refused: ...")` |
 | 本进程 hook 槽位耗尽 | `NativeHookException(... "hook slot exhausted (max 32 per process)")` |
 | 底层安装失败 | `NativeHookException(... "DobbyHook failed")` |
+
+**`hookJavaNativeMethod` 参数**
+
+| 重载 | 参数 | 说明 |
+|---|---|---|
+| 两者 | `callback` | 拦截回调 |
+| `(Method, String, NativeCallback)` | `method` | 目标方法，**必须是 `native` 方法**（否则抛异常） |
+| 同上 | `signature` | **可选**。传 `null` 时由框架按该方法的 Java 声明推导；以 `(` 开头时按 JNI 描述符校验（不一致抛异常）；否则按 §7 的签名格式解析（实参个数必须与目标一致） |
+| `(String, String, String, NativeCallback)` | `className` | 类全限定名（点分） |
+| 同上 | `methodName` | 方法名 |
+| 同上 | `signature` | **JNI 描述符**（如 `"(I)J"`），用于**定位方法**；类型映射由框架按找到的方法推导 |
+
+> ⚠️ **两个重载的 `signature` 语义不同**：`Method` 重载收的是 §7 的签名（或描述符校验），
+> 类名重载收的是**用来查方法的 JNI 描述符**。理由是前者已经有 `Method` 对象、能反射出类型，
+> 后者必须先靠描述符把方法找出来。
+
+**`hookJavaNativeMethod` 与 `hookSymbol` 的语义差别（重要）**
+
+| | `hookSymbol` | `hookJavaNativeMethod` |
+|---|---|---|
+| `signature` 描述 | **C ABI 全参数** | **仅模块可见实参** —— JNI 的 `JNIEnv*` 与接收者由框架自动跳过 |
+| 参数上限 | 8 | **6**（x0/x1 被 `JNIEnv*` 与接收者占用） |
+| `getThisObject()` | `null` | 实例方法返回**真实 `this`**；静态方法返回 `null` |
+| `getMethod()` | `null` | 返回**真实 `Method`** |
+| `getLibName()` / `getSymbolName()` | 库名 / 符号名 | `null` |
+
+**`hookJavaNativeMethod` 抛出**
+
+| 场景 | 异常 |
+|---|---|
+| 任一路径参数为 `null` | `NativeHookException("hookJavaNativeMethod: null argument")` |
+| 目标不是 `native` 方法 | `NativeHookException(... "not a native method: <类.方法>")` |
+| 描述符与目标方法不符 | `NativeHookException(... "JNI descriptor mismatch")` |
+| 签名实参个数与目标不符 | `NativeHookException(... "signature arity mismatch")` |
+| 参数含 `float` / `double` | `NativeHookException(... "not supported (floating-point registers are not marshalled)")` |
+| 参数个数 > 6 | `NativeHookException(... "too many arguments for a JNI method (max 6 ...)")` |
+| 按类名找不到类 / 方法 | `NativeHookException(... "class not found" / "no method ...")` |
+| 该 native 方法**尚未注册实现** | `NativeHookException(... "native method has no registered implementation")` |
+| 目标是 `@CriticalNative` 方法 | `NativeHookException(... "refused: critical native")` |
+| 底层安装失败 / 槽位耗尽 | 同 `hookSymbol` |
 
 **`unhook`**：句柄已失效、或不属于本模块时**为无操作**（不抛异常）。
 ⚠️ 避免与目标函数的高频执行并发调用。`unhook` 返回 `void` —— **模块无法感知卸载是否成功**。
@@ -235,7 +280,10 @@ import java.lang.reflect.Method;
 
 public interface NativeParam {
 
-    /** 获取 this 对象。当前版本恒返回 null。 */
+    /**
+     * 获取 this 对象：仅 hookJavaNativeMethod 的**实例**方法有值；
+     * hookSymbol 与静态方法返回 null。
+     */
     Object getThisObject();
 
     /** 获取指定索引的实参（从 0 开始）。索引越界返回 null。 */
@@ -253,7 +301,7 @@ public interface NativeParam {
     /** 以指定实参调用原函数（不改动当前回调可见的实参）。 */
     Object callOriginal(Object... args);
 
-    /** 目标 Java 方法。当前版本恒返回 null。 */
+    /** 目标 Java 方法：仅 hookJavaNativeMethod 有值，hookSymbol 场景返回 null。 */
     Method getMethod();
 
     /** 目标库名（仅 hookSymbol 场景有值，否则 null）。 */
@@ -273,7 +321,10 @@ public interface NativeParam {
 | `callOriginal()` | 使用**当前**（可能已被 `setArg` 修改）的实参 |
 | `callOriginal(Object...)` | 传 `null` 等价于 `callOriginal()`。**实参个数与签名不符时只记录警告，不抛异常**，且只取前 8 个 |
 | `callOriginal` | hook 已卸载 / 句柄已失效时返回 `null` |
-| `getThisObject` / `getMethod` | 当前版本**恒返回 `null`** |
+| `getThisObject` | `hookSymbol` / 静态方法 → `null`；`hookJavaNativeMethod` 的实例方法 → 真实 `this` |
+| `getMethod` | `hookJavaNativeMethod` → 真实 `Method`；`hookSymbol` → `null` |
+| `getThisObject` 指向的对象 | 是**触发本次调用的那个对象**（不是副本）。跨线程/跨调用保存它没有意义 |
+| `ptr` 类型的实参 / 返回值 | 表示**地址**。⚠️ 涉及 Java 对象时，地址只在**本次回调内**有效——GC 可能移动对象，**不要保存地址、也不要跨回调使用** |
 
 ### 6.5 `HookHandle`
 
@@ -385,6 +436,27 @@ public class NativeHookException extends RuntimeException {
 
 > ⚠️ **`f32` / `f64` 两个常量当前版本不可用** —— 传入含浮点类型的签名会导致安装失败（抛 `invalid signature syntax`）。浮点支持见 §9。
 
+### `hookJavaNativeMethod` 的类型映射（Java 声明 → 签名）
+
+`hookJavaNativeMethod` 的 `signature` 描述的是**模块可见实参**（不含 `JNIEnv*` 与接收者）。
+传 `null` 时框架按方法的 Java 声明推导：
+
+| Java 参数 / 返回类型 | 推导出的签名类型 | 模块侧拿到的 Java 类型 |
+|---|---|---|
+| `void` | `void` | `null` |
+| `boolean` | `bool` | `Boolean` |
+| `byte` | `i8` | `Long` |
+| `short` | `i16` | `Long` |
+| `char` | `u16` | `Long` |
+| `int` | `i32` | `Long` |
+| `long` | `i64` | `Long` |
+| 引用类型 / 数组（`String`、`Object[]` …） | `ptr` | `Long`（对象地址；`0` 表示 null） |
+| `float` / `double` | — | **不支持**，安装时抛异常 |
+
+**返回值**：模块返回与上表对应的值。`void` 目标忽略返回值；**引用类型返回值只能返回
+`ptr`（地址）**——通常是 `callOriginal()` 给的那个地址，或 `null`（即 `0`）。框架不会把
+一个 Java 对象折算成指针。
+
 ### ⚠️ 签名正确性是模块的责任
 
 框架按签名读写目标函数的参数与返回值，**框架无法校验签名是否正确**。
@@ -402,7 +474,7 @@ public class NativeHookException extends RuntimeException {
 3. **参数个数上限 8**，且**参数与返回值须为整型 / 指针 / 布尔**。浮点参数、经栈传递的参数、按值传递的结构体**当前不支持** —— 安装时直接报错，**不会静默错读**。
 4. **每进程 hook 槽位上限 32**（所有模块共用）。
 5. **不接受的目标**：Drip 框架自身所用的库，以及若干底层内存 / 动态链接函数（框架拒绝安装并抛 `NativeHookException`）。这是为了不影响框架自身的正常注入。
-6. **`hookJavaNativeMethod` 系列当前版本未提供** —— 调用会抛 `NativeHookException`。
+6. **`hookJavaNativeMethod` 只能 hook 已经注册过实现（或已被调用过一次）的 native 方法** —— 目标在运行期若还没有 JNI 实现地址，安装会抛 `NativeHookException`；可先让目标方法被调用一次再装。带 `@CriticalNative` 注解的方法**不支持**（其 ABI 没有 `JNIEnv*` 与接收者），安装时会被拒绝。
 7. **作用域**：hook 只在**当前注入进程**内生效，与模块的作用域配置一致。
 8. **回调禁止长时间阻塞**（见 §6.3 线程模型）。
 
@@ -412,8 +484,10 @@ public class NativeHookException extends RuntimeException {
 
 | 能力 | 状态 |
 |---|---|
-| `hookJavaNativeMethod`（hook Java native 方法） | 未提供，调用抛 `NativeHookException` |
 | 浮点参数 / 返回（`f32` / `f64`） | 不支持，安装失败 |
+| `hookJavaNativeMethod` 的参数个数 | 上限 **6**（`JNIEnv*` 与接收者占用 x0/x1） |
+| `@CriticalNative` 方法 | 不支持，安装时拒绝 |
+| 引用类型**返回值**返回另一个 Java 对象 | 不支持（只能返回 `ptr` 地址，见 §7） |
 | 经栈传递的参数 / 结构体返回 | 不支持，安装失败 |
 | hook 库内部非导出符号 | 不支持 |
 | `priority` 的实际排序效果 | 未生效（§6.7） |
