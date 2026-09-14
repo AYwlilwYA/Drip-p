@@ -238,7 +238,9 @@ public interface DripNativeHook {
 | 按类名找不到类 / 方法 | `NativeHookException(... "class not found" / "no method ...")` |
 | 该 native 方法**尚未注册实现** | `NativeHookException(... "native method has no registered implementation")` |
 | 目标是 `@CriticalNative` 方法 | `NativeHookException(... "refused: critical native")` |
-| 底层安装失败 / 槽位耗尽 | 同 `hookSymbol` |
+| 运行期 ArtMethod 布局推导失败 | `NativeHookException(... "cannot determine the runtime ArtMethod layout")` |
+| 改写目标方法入口后自校验不通过 | `NativeHookException(... "data_ write verify failed")` |
+| 槽位耗尽 | 同 `hookSymbol`（`"hook slot exhausted (max 32 per process)"`） |
 
 **`unhook`**：句柄已失效、或不属于本模块时**为无操作**（不抛异常）。
 ⚠️ 避免与目标函数的高频执行并发调用。`unhook` 返回 `void` —— **模块无法感知卸载是否成功**。
@@ -456,6 +458,9 @@ public class NativeHookException extends RuntimeException {
 **返回值**：模块返回与上表对应的值。`void` 目标忽略返回值；**引用类型返回值只能返回
 `ptr`（地址）**——通常是 `callOriginal()` 给的那个地址，或 `null`（即 `0`）。框架不会把
 一个 Java 对象折算成指针。
+
+**作用范围只限你指定的那个方法**：即使多个 Java `native` 方法底层共用同一份实现，
+hook 也**只对你指定的方法生效**，其余方法的行为与返回值不受影响。
 
 ### ⚠️ 签名正确性是模块的责任
 
