@@ -157,7 +157,8 @@ object ManagerServiceClient {
         call("setGlobalMode", false) { it.setGlobalMode(enabled); true }
 
     // ==== M25 动态作用域：pending 请求查询 / 响应 ====
-    // （ScopeRequestWatcher 轮询 → 带「批准/拒绝」按钮通知 → action 广播 → respondScopeRequest。）
+    // （daemon 直发带 request_id 的通知 → 点开 ScopeRequestDialogActivity 弹窗 →
+    //  这里查 pending / respondScopeRequest 落决定。）
     fun getPendingScopeRequests(): List<ScopeRequestInfo> =
         call("getPendingScopeRequests", emptyList()) { it.getPendingScopeRequests() }
     fun respondScopeRequest(requestId: Int, allow: Boolean): Boolean =

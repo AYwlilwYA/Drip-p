@@ -24,6 +24,16 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- M25 动态作用域请求弹窗：daemon 通知点进来的「小型弹窗」（对话框主题，自身不占 recents）。
+             寄生模式下 framework 靠本声明（getPackageArchiveInfo(GET_ACTIVITIES) 解析 manager APK）
+             才能拿到它的 ActivityInfo，从而把宿主 Activity 的启动重定向到本类。 -->
+        <activity
+            android:name=".ui.ScopeRequestDialogActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:theme="@style/Theme.DripManager.Dialog" />
     </application>
 
 </manifest>

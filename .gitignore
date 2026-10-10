@@ -18,3 +18,7 @@ captures/
 # 临时
 *.tmp
 *.log
+
+# 编辑器 / Python
+.vs/
+__pycache__/

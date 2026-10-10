@@ -86,12 +86,21 @@ enum class ManagerTab(
     Settings("设置", Icons.Outlined.Settings, Icons.Filled.Settings),
 }
 
+/**
+ * M40：通知点击 → 直达**该模块的设置页**（ScopeScreen）的 extra，值 = 模块包名。
+ * 三处同值：本文件、`ModuleInstallWatcher`、daemon `ModuleUpdateNotifier`
+ * （framework 侧不用认它——重定向只换 component/ActivityInfo，extras 原样透传）。
+ */
+const val EXTRA_OPEN_MODULE = "drip.open_module"
+
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         // 提取 Intent extras：通知点击跳日志页
         val openLogs = intent?.getBooleanExtra("drip.open_logs", false) == true
         val logFilterTag = intent?.getStringExtra(EXTRA_LOG_FILTER_TAG)
+        // 通知点击跳「模块设置页」（模块更新通知用）
+        val openModule = intent?.getStringExtra(EXTRA_OPEN_MODULE)
         setContent {
             val appContext = applicationContext
             var settings by remember { mutableStateOf(SettingsState.load(appContext)) }
@@ -107,6 +116,7 @@ class MainActivity : ComponentActivity() {
                     },
                     initialTab = if (openLogs) ManagerTab.Logs else null,
                     initialLogTag = if (openLogs) logFilterTag else null,
+                    initialModulePackage = openModule,
                 )
             }
         }
@@ -119,9 +129,11 @@ private fun ManagerApp(
     onSettingsChange: (SettingsState) -> Unit,
     initialTab: ManagerTab? = null,
     initialLogTag: String? = null,
+    initialModulePackage: String? = null,
 ) {
     var selectedTab by rememberSaveable { mutableStateOf(initialTab ?: ManagerTab.Home) }
     var initialLogTagApplied by rememberSaveable { mutableStateOf(false) }
+    var initialModuleApplied by rememberSaveable { mutableStateOf(false) }
     // #9 旋转不丢：存模块包名（String 可 saveable），重建时经 client 找回模块
     var scopeModulePackage by rememberSaveable { mutableStateOf<String?>(null) }
     var lastModule by remember { mutableStateOf<ModuleInfo?>(null) }
@@ -151,6 +163,16 @@ private fun ManagerApp(
         // 这里只做 UI 侧：初始化 client 引用 + 连接（注入后即真实数据）+ 权限引导。
         ManagerServiceClient.init(appContext)
         ManagerServiceClient.connect()
+        // M40：通知直达模块设置页。**必须在 connect() 之后**——scopeModule 是
+        // `remember(scopeModulePackage)` 算出来的（见下），若在未连接时就设，getModuleInfo
+        // 返回 null 且不会重算 ⇒ 会静默落回列表页。同 initialLogTag 的「一次性 applied」语义。
+        val targetModule = initialModulePackage
+        if (!initialModuleApplied && !targetModule.isNullOrEmpty()) {
+            initialModuleApplied = true
+            // 返回时落在模块列表而非首页（用户是冲着"某个模块"来的）
+            selectedTab = ManagerTab.Modules
+            scopeModulePackage = targetModule
+        }
         // 通知投递完全由控制器驱动；此处仅处理「开关开但缺权限」→ 引导系统授权，
         // 授权成功后控制器自动补投。
         if (ManagerServiceClient.isStatusNotificationEnabled()

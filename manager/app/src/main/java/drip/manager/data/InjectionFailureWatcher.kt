@@ -113,8 +113,13 @@ object InjectionFailureWatcher {
                         .setCategory(androidx.core.app.NotificationCompat.CATEGORY_ERROR)
                         .build()
                 }
-            androidx.core.app.NotificationManagerCompat.from(context)
-                .notify(INJECTION_FAILURE_NOTIFICATION_ID, notification)
+            // 「通知全走 daemon」（2026-09-16）：注入失败横幅改由 daemon 直发
+            // （daemon 是 root 常驻，不受系统冻结影响）；这里只保留日志抓取等本地动作。
+            // 保留 notification 变量的构建以避免大改，但不投递，防止出现重复横幅。
+            @Suppress("UNUSED_EXPRESSION")
+            notification
+            // androidx.core.app.NotificationManagerCompat.from(context)
+            //     .notify(INJECTION_FAILURE_NOTIFICATION_ID, notification)
             Log.i(TAG, "injection failure notification posted (id=$INJECTION_FAILURE_NOTIFICATION_ID)")
         } catch (e: Exception) {
             Log.w(TAG, "sendInjectionFailureNotification failed: $e", e)

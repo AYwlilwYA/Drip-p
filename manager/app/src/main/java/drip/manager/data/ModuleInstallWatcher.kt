@@ -19,6 +19,8 @@ import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import drip.manager.R
 import drip.manager.ScopeEntry
+import drip.manager.ui.EXTRA_ACTIVATE_MODULE
+import drip.manager.ui.EXTRA_OPEN_MODULE
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -27,32 +29,44 @@ import kotlinx.coroutines.withContext
 
 object ModuleInstallWatcher {
 
-    /** 待激活的模块（通知数据源）。 */
+    /**
+     * 模块安装/更新通知的数据源。
+     * [enabled] = 该模块已在 Drip 中启用（通知只提示「已更新 + 生效方式」，无「激活」action）；
+     * [syncedScope] = 本次为已启用模块新增同步的推荐作用域应用数（仅 enabled 时有意义）。
+     */
     data class PendingModule(
         val packageName: String,
         val name: String,
         val isUpdate: Boolean,
+        val enabled: Boolean = false,
+        val syncedScope: Int = 0,
     )
 
     /** 当前待激活模块；null = 无。保留供通知流程内部用（应用内横幅 UI 已移除）。 */
     val pendingModule = mutableStateOf<PendingModule?>(null)
 
-    /** 「激活」通知 action 的广播 action + extra key（PendingIntent.getBroadcast 触发）。 */
-    const val ACTION_ACTIVATE_MODULE = "drip.manager.action.ACTIVATE_MODULE"
-    private const val EXTRA_PACKAGE = "package"
-    private const val EXTRA_NAME = "name"
-
     /** 模块通知 channel（装/更新模块是重要事件，IMPORTANCE_HIGH 可响铃/振动）。 */
     private const val MODULE_CHANNEL_ID = "module_update"
-    /** 通知本体点击打开 manager 的 PendingIntent requestCode（与 StatusNotification 的 0 区分）。 */
-    private const val OPEN_MANAGER_REQUEST_CODE = 100
+    /** 通知本体点击的 PendingIntent requestCode 基址（与 StatusNotification 的 0 区分）。 */
+    private const val OPEN_MANAGER_REQUEST_CODE_BASE = 1000
+
+    /**
+     * requestCode **必须按「模块包 + 动作」区分**：PendingIntent 的身份 =
+     * (type, requestCode, intent.filterEquals)，而 filterEquals **只比 component/action/categories、
+     * 不比 extras** —— 所有通知的 component 都是同一个宿主 Activity，包名/动作全在 extras 里
+     * ⇒ 共用一个常量会让全部通知变成**同一个** PendingIntent。
+     * 后果（M38/M40 之后 extras 已是**动作指令**，不再是空 extras）：连续装两个未激活模块 A、B，
+     * 点 A 的通知 → 弹窗显示 A 的名字（文案来自 A），实际执行的却是 `setModuleEnabled(B, true)`。
+     * 同基址下每包 2 个槽（激活 / 打开设置页各一），hash 低 16 位。
+     */
+    private fun openManagerRequestCode(pkg: String, activate: Boolean): Int =
+        OPEN_MANAGER_REQUEST_CODE_BASE + (pkg.hashCode() and 0xFFFF) * 2 + if (activate) 1 else 0
     /** 模块通知 ID 基址：包名 hash 落高位段，避开状态通知 ID 1001。 */
     private const val MODULE_NOTIFICATION_ID_BASE = 0x5A000000
     private const val TAG = "DripManager"
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var receiver: BroadcastReceiver? = null
-    private var activateReceiver: BroadcastReceiver? = null
 
     /** 进程级常驻：ensureRegistered 已注册（进程存活期间不注销）。 */
     @Volatile
@@ -102,28 +116,15 @@ object ModuleInstallWatcher {
         ContextCompat.registerReceiver(context, r, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
         receiver = r
 
-        // 「激活」action 接收器：通知栏点「激活」→ PendingIntent.getBroadcast 到此。
-        // 广播由系统以本 app UID（PendingIntent 创建者身份）代为发送，NOT_EXPORTED 可收到。
-        val ar = object : BroadcastReceiver() {
-            override fun onReceive(ctx: Context, intent: Intent) {
-                if (intent.action != ACTION_ACTIVATE_MODULE) return
-                val pkg = intent.getStringExtra(EXTRA_PACKAGE) ?: return
-                val name = intent.getStringExtra(EXTRA_NAME) ?: pkg
-                // activate 内部自行 launch 到后台 scope，onReceive 返回后照常执行。
-                activate(ctx, PendingModule(pkg, name, false))
-            }
-        }
-        ContextCompat.registerReceiver(
-            context, ar, IntentFilter(ACTION_ACTIVATE_MODULE), ContextCompat.RECEIVER_NOT_EXPORTED)
-        activateReceiver = ar
+        // M38：「激活」不再走通知栏 action 按钮（那需要一个常驻的广播接收器），改为点通知本体
+        // → 宿主 Activity + LAUNCH_MANAGER + EXTRA_ACTIVATE_MODULE → framework 重定向到
+        // ScopeRequestDialogActivity 的激活模式。故此处只保留安装/更新广播接收器。
     }
 
     fun unregister(context: Context) {
         val r = receiver ?: return
         receiver = null
         context.unregisterReceiver(r)
-        activateReceiver?.let { context.unregisterReceiver(it) }
-        activateReceiver = null
     }
 
     /** 检测在后台线程跑（PM/daemon 调用不阻塞 onReceive），命中则投递系统通知。 */
@@ -138,7 +139,15 @@ object ModuleInstallWatcher {
                 val pending = detectPendingModule(context.applicationContext, pkg, isUpdate)
                 if (pending != null) {
                     pendingModule.value = pending
-                    showModuleNotification(context.applicationContext, pending)
+                    // M44：「尚未激活 / 已更新」通知**已全部改由 daemon 直发**
+                    // （ModuleUpdateNotifier）。本接收器保留的是**兜底层** —— daemon 缓存重建
+                    // 通知 + 推荐作用域同步，见 detectPendingModule 内的注释。
+                    //
+                    // 为什么不在这里发：本接收器随 manager 进程存活，而 manager 是寄生的
+                    // ——宿主 com.android.shell 是后台 cached 进程、由 daemon 按需拉起，
+                    // **装模块那一刻宿主没在跑就整条错过且无补投**（2026-09-17 实测：
+                    // 包事件 21:48:15，宿主 21:48:52 才起来，整整晚 37 秒）。
+                    // 与 M34 横幅同一个坑（「通知全走 daemon」原则），当时只搬了横幅。
                 }
             } finally {
                 // goAsync 窗口必须收尾；检测内部已各自吞异常，finally 兜底防泄漏。
@@ -182,11 +191,14 @@ object ModuleInstallWatcher {
             // 已启用模块更新（PACKAGE_REPLACED，不重新激活）→ 模块新版本的
             // 推荐作用域不会自动应用。此处同步「合并新增」：新推荐包并入 scope，用户手动
             // 选的保留不覆盖；模块新版本移除的推荐包不删（只加不减，防静默移除用户手动
-            // 保留的 app）。失败静默，不弹通知。
+            // 保留的 app）。失败静默（同步失败不影响通知）。
             if (isUpdate) {
                 val added = syncRecommendedScope(context, pkg)
                 Log.i(TAG, "enabled module $pkg updated: recommended scope merge added $added app(s)")
             }
+            // 「已启用模块已更新」横幅改由 **daemon 直发**（2026-09-16 用户拍板「通知全走 daemon」）：
+            // manager 寄生的宿主是 cached 进程会被冻结 → PACKAGE_REPLACED 排队、横幅晚到约 1 分钟；
+            // daemon（root）经寄生注册直接收包事件，即时投递。此处不再发通知，只做作用域同步。
             return null
         }
         return PendingModule(pkg, resolveAppLabel(context, pkg), isUpdate)
@@ -254,7 +266,10 @@ object ModuleInstallWatcher {
 
     /**
      * 投递模块「尚未激活」系统通知。无 POST_NOTIFICATIONS 权限时静默失败（与状态通知同约定）。
-     * 通知本体点击 → 打开 manager；action「激活」→ [ACTION_ACTIVATE_MODULE] 广播。
+     *
+     * M38：**未激活**的模块 → 点通知本体直接弹「激活」弹窗（宿主 Activity + LAUNCH_MANAGER +
+     * [EXTRA_ACTIVATE_MODULE] → framework 重定向到 `ScopeRequestDialogActivity` 激活模式）；
+     * **已启用**（更新）的模块 → 点通知照旧打开 manager 主界面。
      * 寄生模式：Notification.Builder + Icon.createWithBitmap（绕过 system_server 资源解析）；
      * 独立模式：NotificationCompat.Builder + 资源 ID（标准路径）。
      */
@@ -263,57 +278,65 @@ object ModuleInstallWatcher {
         if (!notificationPermissionGate(context, "module")) return
         try {
             createModuleNotificationChannel(context)
+            // M38：未激活模块的通知**点本体直接弹激活弹窗**（不再挂通知栏 action 按钮）。
+            // 做法与作用域请求一致：宿主 Activity + LAUNCH_MANAGER + 激活 extra，
+            // framework 侧按该 extra 重定向到 ScopeRequestDialogActivity 的激活模式。
+            //
+            // ⚠️ 未激活时**不能带 FLAG_ACTIVITY_SINGLE_TOP**：那会让 AMS 走宿主 Activity 的
+            // onNewIntent 复用栈顶实例，ActivityClientRecord 不新建 ⇒ framework 的
+            // ActivityClientRecord 重定向不发生 ⇒ 弹窗永远起不来（同 DaemonNotifier 的作用域请求注释）。
+            // 已启用（更新）那条仍是普通「打开 manager」，保留 SINGLE_TOP 避免叠栈。
             val openIntent = buildManagerOpenIntent(context).apply {
-                flags = Intent.FLAG_ACTIVITY_SINGLE_TOP
+                if (pending.enabled) {
+                    flags = Intent.FLAG_ACTIVITY_SINGLE_TOP
+                    // M40：已启用模块更新 → 点通知直达它的设置页，而不是 manager 首页
+                    putExtra(EXTRA_OPEN_MODULE, pending.packageName)
+                } else {
+                    putExtra(EXTRA_ACTIVATE_MODULE, pending.packageName)
+                }
             }
             val openPi = PendingIntent.getActivity(
-                context, OPEN_MANAGER_REQUEST_CODE, openIntent,
+                context,
+                openManagerRequestCode(pending.packageName, activate = !pending.enabled),
+                openIntent,
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
             )
-            val activateIntent = Intent(ACTION_ACTIVATE_MODULE)
-                .setPackage(context.packageName)
-                .putExtra(EXTRA_PACKAGE, pending.packageName)
-                .putExtra(EXTRA_NAME, pending.name)
-            val activatePi = PendingIntent.getBroadcast(
-                context, pending.packageName.hashCode(), activateIntent,
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-            )
-            val text = if (pending.isUpdate) {
-                "「${pending.name}」已更新，尚未激活"
-            } else {
-                "「${pending.name}」已安装，尚未激活"
+            val title = if (pending.enabled || pending.isUpdate) "模块已更新" else "新模块已安装"
+            val text = when {
+                // 已启用模块：换了新版本，作用域内已运行进程仍是旧 dex —— 必须重启才生效
+                pending.enabled -> buildString {
+                    append("「${pending.name}」已更新")
+                    if (pending.syncedScope > 0) append("，已同步 ${pending.syncedScope} 个推荐应用")
+                    append("；作用域内应用重启进程后生效")
+                }
+                pending.isUpdate -> "「${pending.name}」已更新，尚未激活"
+                else -> "「${pending.name}」已安装，尚未激活"
             }
             val notification =
                 if (isParasiticHostProcess()) {
                     // 寄生模式：用 Bitmap Icon（绕过 system_server 资源解析）
                     val smallIcon = dripSmallIcon(context)!!
-                    val actionIcon = dripSmallIcon(context) ?: smallIcon
-                    val action = android.app.Notification.Action.Builder(
-                        actionIcon, "激活", activatePi,
-                    ).build()
-                    android.app.Notification.Builder(context, MODULE_CHANNEL_ID)
+                    val b = android.app.Notification.Builder(context, MODULE_CHANNEL_ID)
                         .setSmallIcon(smallIcon)
-                        .setContentTitle(if (pending.isUpdate) "模块已更新" else "新模块已安装")
+                        .setContentTitle(title)
                         .setContentText(text)
                         .setStyle(
                             android.app.Notification.BigTextStyle().bigText(text)
                         )
                         .setContentIntent(openPi)
-                        .addAction(action)
-                        .setAutoCancel(true)
+                    b.setAutoCancel(true)
                         .setCategory(android.app.Notification.CATEGORY_EVENT)
                         .setVisibility(android.app.Notification.VISIBILITY_PUBLIC)
                         .build()
                 } else {
                     // 独立模式：用资源 ID
-                    NotificationCompat.Builder(context, MODULE_CHANNEL_ID)
+                    val nb = NotificationCompat.Builder(context, MODULE_CHANNEL_ID)
                         .setSmallIcon(R.drawable.ic_stat_drip)
-                        .setContentTitle(if (pending.isUpdate) "模块已更新" else "新模块已安装")
+                        .setContentTitle(title)
                         .setContentText(text)
                         .setStyle(NotificationCompat.BigTextStyle().bigText(text))
                         .setContentIntent(openPi)
-                        .addAction(R.drawable.ic_stat_drip, "激活", activatePi)
-                        .setAutoCancel(true)
+                    nb.setAutoCancel(true)
                         .setPriority(NotificationCompat.PRIORITY_HIGH)
                         .setCategory(NotificationCompat.CATEGORY_EVENT)
                         .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
@@ -333,57 +356,20 @@ object ModuleInstallWatcher {
     }
 
     /**
-     * 激活模块：启用 + 自动应用推荐作用域（`drip_scope` 声明的包），成功后取消该模块通知。
-     * 未连接 daemon 时 setModuleEnabled 返回 false → 提示失败、通知保留可稍后重试。
+     * M38：激活动作已移到 [drip.manager.ui.ScopeRequestDialogActivity] 的激活模式
+     * （点通知 → 弹窗 → 激活），此处不再有 activate()。原实现在激活后调用的
+     * `applyRecommendedScope`（整表替换）也随之移除；弹窗改用 [syncRecommendedScope]
+     * （只加不减，与「已启用模块更新时同步作用域」同一语义）——新装模块通常没有既有 scope，
+     * 两者结果一致，但「只加不减」不会覆盖用户后续的手动增删。
      */
-    fun activate(context: Context, pending: PendingModule) {
-        val appContext = context.applicationContext
-        scope.launch {
-            ManagerServiceClient.connect()
-            val enabled = ManagerServiceClient.setModuleEnabled(pending.packageName, true)
-            val scopeCount = if (enabled) applyRecommendedScope(appContext, pending.packageName) else 0
-            withContext(Dispatchers.Main) {
-                when {
-                    !enabled -> Toast.makeText(
-                        appContext, "激活失败（未连接 daemon）", Toast.LENGTH_SHORT).show()
-                    scopeCount > 0 -> {
-                        pendingModule.value = null
-                        cancelModuleNotification(appContext, pending.packageName)
-                        Toast.makeText(
-                            appContext, "已激活并应用 $scopeCount 个推荐应用", Toast.LENGTH_SHORT).show()
-                    }
-                    else -> {
-                        pendingModule.value = null
-                        cancelModuleNotification(appContext, pending.packageName)
-                        Toast.makeText(
-                            appContext, "已激活（模块未声明推荐作用域）", Toast.LENGTH_SHORT).show()
-                    }
-                }
-            }
-        }
-    }
-
-    /** 应用推荐作用域，返回写入成功的推荐包数；无推荐/未连接返回 0。 */
-    private suspend fun applyRecommendedScope(context: Context, pkg: String): Int {
-        val recommended = ManagerServiceClient.getModuleRecommendedScope(pkg)
-        if (recommended.isEmpty()) return 0
-        val entries = recommended.map { app ->
-            ScopeEntry().apply {
-                appPackageName = app
-                userId = resolveUserId(context, app)
-            }
-        }
-        val ok = ManagerServiceClient.setModuleScope(pkg, entries)
-        return if (ok) entries.size else 0
-    }
 
     /**
-     * 模块更新后推荐作用域重新同步（合并新增，不重置）。语义「只加不减」：
+     * 推荐作用域同步（合并新增，不重置）。语义「只加不减」：
      * 当前 scope（staticScope + 用户 scope）并上模块新推荐包——新增推荐包自动加入；
      * 用户手动选的保留不覆盖；模块新版本移除的推荐包不删除（删除需用户在 UI 手动操作，
      * 防模块更新静默移除用户手动保留的 app）。返回新增写入的推荐包数。
      */
-    private suspend fun syncRecommendedScope(context: Context, pkg: String): Int {
+    internal suspend fun syncRecommendedScope(context: Context, pkg: String): Int {
         val recommended = ManagerServiceClient.getModuleRecommendedScope(pkg)
         if (recommended.isEmpty()) return 0
         val current = ManagerServiceClient.getModuleScope(pkg)

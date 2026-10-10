@@ -79,23 +79,15 @@ object StatusNotificationController {
      * 全条件齐才投：注入 ✓ + Context ✓ + 连接 ✓ + 开关 ✓（daemon 远端查询，无记录默认开）
      * + 权限 ✓（Android 13+；缺权限不发，等待 UI 引导授权后事件 D 补投）。
      * 任一条件不满足静默返回——对应事件到达时 evaluate 会再次触发，无需轮询。
+     *
+     * **2026-09-16 起本控制器不再投递常驻通知**：常驻通知已改由 daemon 直发
+     * （`drip.daemon.util.StatusNotifier`，id 1001 / channel `drip_status` 同一条，daemon 启动
+     * 与开关变更时投递或撤销）。原因：manager 寄生宿主 `com.android.shell` 是后台 cached 进程、
+     * 会被系统冻结 ⇒ 投递/撤销排队延迟；daemon 是 root 常驻、且以系统身份投递还免掉了
+     * POST_NOTIFICATIONS 权限门。此处只记事件（保留调用点，方便排查注入会话时序），不投递。
      */
     private fun evaluate(reason: String) {
-        val ctx = appContext ?: return
-        val posted = synchronized(this) {
-            if (postedThisSession) return@synchronized false
-            if (!injected || !ManagerServiceClient.connected) return@synchronized false
-            if (!ManagerServiceClient.isStatusNotificationEnabled()) return@synchronized false
-            // 权限门在 showStatusNotification 内部（Android 13+ 无权限时 notify 被系统
-            // 静默丢弃）：无权限返回 false → 不置 postedThisSession → 授权事件 D 到达后
-            // evaluate 再次触发补投；其余条件不满足同理等待对应事件，无需轮询。
-            if (showStatusNotification(ctx)) {
-                postedThisSession = true
-                true
-            } else {
-                false
-            }
-        }
-        if (posted) Log.i(TAG, "status notification posted (trigger=$reason)")
+        Log.i(TAG, "evaluate(trigger=$reason): posting delegated to daemon StatusNotifier" +
+            " (injected=$injected, connected=${ManagerServiceClient.connected})")
     }
 }
