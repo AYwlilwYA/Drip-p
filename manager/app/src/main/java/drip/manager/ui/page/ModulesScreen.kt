@@ -11,6 +11,7 @@ import android.widget.Toast
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -61,12 +62,15 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.core.graphics.drawable.toBitmap
+import drip.manager.data.KernelModeState
 import drip.manager.data.ManagerServiceClient
 import drip.manager.ui.component.AppIconPlaceholder
 import drip.manager.ui.component.PanelHeader
@@ -97,6 +101,8 @@ fun ModulesScreen(
     var onlyEnabled by rememberSaveable { mutableStateOf(false) }
     var onlyFailed by rememberSaveable { mutableStateOf(false) }
     var selectedUser by rememberSaveable { mutableStateOf(0) }
+    // 设备真实用户 id（daemon 枚举；含分身 user 999）。
+    var deviceUsers by remember { mutableStateOf<List<Int>>(listOf(0)) }
     var menuExpanded by remember { mutableStateOf(false) }
     var longPressModule by remember { mutableStateOf<drip.manager.ModuleInfo?>(null) }
     var modules by remember { mutableStateOf<List<UiModule>>(emptyList()) }
@@ -132,17 +138,22 @@ fun ModulesScreen(
     LaunchedEffect(Unit) {
         ManagerServiceClient.connect()
         loadModules()
+        deviceUsers = withContext(Dispatchers.IO) {
+            runCatching { ManagerServiceClient.getUsers().map { it.id } }.getOrDefault(emptyList())
+        }.ifEmpty { listOf(0) }
     }
 
     val connected = ManagerServiceClient.connected
+    // 安全模式：模块页置灰 + 拦截点击（设计卡 §7：禁模块加载，只保留核心与 UI）
+    val safeMode = KernelModeState.status.safeMode
     // 多用户 tab 真实过滤（ModuleInfo.userId）+ 已启用模块置顶（enabled 在前，disabled 在后，各自保持现有顺序）
-    val filtered = remember(query, onlyEnabled, onlyFailed, selectedUser, modules) {
+    val filtered = remember(query, onlyEnabled, onlyFailed, selectedUser, modules, deviceUsers) {
         val list = modules.filter { m ->
             (query.isBlank() || m.info.name.contains(query, ignoreCase = true) ||
                     m.info.packageName.contains(query, ignoreCase = true)) &&
                     (!onlyEnabled || (m.info.enabled && !m.info.loadFailed)) &&
                     (!onlyFailed || m.info.loadFailed) &&
-                    (if (selectedUser == 0) m.info.userId == 0 else m.info.userId == 10)
+                    (m.info.userId == deviceUsers.getOrElse(selectedUser) { 0 })
         }
         val (enabled, disabled) = list.partition { it.info.enabled }
         enabled + disabled
@@ -150,10 +161,19 @@ fun ModulesScreen(
     // activeCount 按过滤后可见列表统计
     val activeCount = filtered.count { it.info.enabled && !it.info.loadFailed }
 
-    Column(Modifier.fillMaxSize()) {
+    Box(Modifier.fillMaxSize()) {
+    Column(
+        Modifier
+            .fillMaxSize()
+            .alpha(if (safeMode) 0.4f else 1f),
+    ) {
         PanelHeader(
             title = "模块",
-            subtitle = if (connected) "$activeCount of ${filtered.size} active" else "未连接 daemon",
+            subtitle = when {
+                !connected -> "未连接 daemon"
+                safeMode -> "安全模式：模块已停用"
+                else -> "$activeCount of ${filtered.size} active"
+            },
         )
 
         SearchField(
@@ -193,9 +213,9 @@ fun ModulesScreen(
                 .padding(horizontal = 20.dp, vertical = 10.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            listOf("User 0", "User 10").forEachIndexed { index, label ->
+            deviceUsers.forEachIndexed { index, uid ->
                 PillChip(
-                    text = label,
+                    text = "User $uid",
                     selected = selectedUser == index,
                     onClick = { selectedUser = index },
                 )
@@ -257,6 +277,30 @@ fun ModulesScreen(
                             onLongClick = { longPressModule = module.info },
                         )
                     }
+                }
+            }
+        }
+    }
+
+        // 安全模式遮罩：置灰 + 拦截全部点击（设计卡 §7「模块页置灰」）
+        if (safeMode) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .pointerInput(Unit) { detectTapGestures { } },
+                contentAlignment = Alignment.Center,
+            ) {
+                Surface(
+                    shape = RoundedCornerShape(16.dp),
+                    color = MaterialTheme.colorScheme.errorContainer,
+                ) {
+                    Text(
+                        "安全模式生效中\n模块已停用",
+                        modifier = Modifier.padding(horizontal = 20.dp, vertical = 14.dp),
+                        textAlign = TextAlign.Center,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onErrorContainer,
+                    )
                 }
             }
         }

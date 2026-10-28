@@ -4,6 +4,7 @@ package drip.manager.data
 import android.content.Context
 import android.content.SharedPreferences
 import android.util.Log
+import drip.manager.IManagerService
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -15,17 +16,23 @@ import kotlinx.coroutines.launch
  * 注入失败检测 + 通知 + 日志自动转储。
  *
  * 机制：
- * - 启动后立即检查 isInjectionFailed()
- * - 若 daemon 报告 relay_fail / bridge_fail 标记存在 → 发通知 + 自动 dumpLogs 一次
- * - 去重：标记存在期间只通知一次（SharedPreferences 记录已通知状态）
- * - 通知内容：「Drip注入失败」+ 正文「崩溃日志已保存\n可联系开发者，提供 /Download/Driplog 日志文件」
+ * - 启动后立即检查注入失败来源（[ManagerServiceClient.getInjectionFailureSource] 位掩码）
+ * - 若 daemon 报告失败标记存在 → 按来源取文案发通知 + 自动 dumpLogs 一次
+ * - 去重：同一来源存在期间只通知一次（SharedPreferences 记录已通知来源）
+ * - 通知文案按来源拆分（设计卡 §5-4，第四批② 拍板）：已回退用户模式 / 已完成自动复原 /
+ *   Drip注入失败 —— 只有真失败（relay / bridge / 复原失败）才用「Drip注入失败」
  * - 点击通知 → 打开 manager（buildManagerOpenIntent）
  */
 object InjectionFailureWatcher {
     private const val TAG = "InjectionFailureWatcher"
     private const val POLL_INTERVAL_MS = 15_000L
     private const val PREFS_NAME = "injection_failure_notified"
-    private const val KEY_NOTIFIED = "notified" // Boolean，标记存在期间只通知一次
+    // 值 = 已通知的来源位掩码；来源变化（例如回退 → 真失败）时会再通知一次。
+    private const val KEY_NOTIFIED_SOURCE = "notified_source"
+
+    /** 真失败的既有正文（relay / bridge / 复原失败）。 */
+    private const val BODY_LOG_SAVED =
+        "崩溃日志已保存\n可联系开发者，提供 /Download/Driplog 日志文件"
 
     private var scope: CoroutineScope? = null
 
@@ -55,25 +62,47 @@ object InjectionFailureWatcher {
     /** 检查注入失败并发送通知。 */
     private suspend fun checkAndNotify(context: Context) {
         if (!ManagerServiceClient.connected) return
-        val failed = with(Dispatchers.IO) {
-            ManagerServiceClient.isInjectionFailed()
+        val (source, failed) = with(Dispatchers.IO) {
+            val mask = ManagerServiceClient.getInjectionFailureSource()
+            // daemon 侧位掩码尚未实现时回退 boolean 判据（协议降级不误报）。
+            mask to (mask != IManagerService.FAIL_NONE || ManagerServiceClient.isInjectionFailed())
         }
         if (!failed) return
         val prefs = getPrefs(context)
-        if (prefs.getBoolean(KEY_NOTIFIED, false)) return // 已通知过，去重
-        // 注入失败 → 发通知 + 自动转储日志
-        sendInjectionFailureNotification(context)
-        autoDumpLogs(context)
-        prefs.edit().putBoolean(KEY_NOTIFIED, true).apply()
-        Log.i(TAG, "injection failure notification posted")
+        // -1 = 从未通知过（source 可能为 0 = daemon 侧位掩码未实现、只有 boolean 命中）
+        if (prefs.getInt(KEY_NOTIFIED_SOURCE, -1) == source) return
+        // 注入失败 → 发通知 + 自动转储日志（仅「已完成自动复原」无故障可导，不转储）
+        sendInjectionFailureNotification(context, source)
+        if (source != IManagerService.FAIL_OBF_RESTORED) {
+            autoDumpLogs(context)
+        }
+        prefs.edit().putInt(KEY_NOTIFIED_SOURCE, source).apply()
+        Log.i(TAG, "injection failure notification posted (source=$source)")
     }
 
-    /** 发送注入失败通知。 */
-    private fun sendInjectionFailureNotification(context: Context) {
+    /**
+     * 来源位掩码 → 通知文案（设计卡 §5-4 表）。位掩码同时命中多个来源时按「真失败 > 崩溃待
+     * 反馈 > 已回退 > 已复原」取最严重的一项。
+     */
+    fun failureText(source: Int): Pair<String, String> = when {
+        source and (IManagerService.FAIL_RELAY or
+            IManagerService.FAIL_BRIDGE or
+            IManagerService.FAIL_OBF_FAILED) != 0 -> "Drip注入失败" to BODY_LOG_SAVED
+        source and IManagerService.FAIL_KMOD_CRASH_PENDING != 0 ->
+            "当前内核不支持内核模式!" to "请联系作者并且反馈!将该压缩包发送至相关群聊或者提交issue!"
+        source and IManagerService.FAIL_KMOD_FALLBACK != 0 ->
+            "已回退用户模式" to "已进入用户模式，请重新验证"
+        source and IManagerService.FAIL_OBF_RESTORED != 0 -> "已完成自动复原" to "无需处理"
+        else -> "Drip注入失败" to BODY_LOG_SAVED
+    }
+
+    /** 发送注入失败通知（标题/正文按来源取，设计卡 §5-4）。 */
+    private fun sendInjectionFailureNotification(context: Context, source: Int) {
         // 权限门统一在 StatusNotification.notificationPermissionGate（Android 13+ 无权限静默）。
         if (!notificationPermissionGate(context, "injection-failure")) return
         try {
             createInjectionFailureChannel(context)
+            val (title, body) = failureText(source)
             val intent = buildManagerOpenIntent(context).apply {
                 flags = android.content.Intent.FLAG_ACTIVITY_SINGLE_TOP
             }
@@ -89,8 +118,8 @@ object InjectionFailureWatcher {
                 if (isParasiticHostProcess()) {
                     android.app.Notification.Builder(context, INJECTION_FAILURE_CHANNEL_ID)
                         .setSmallIcon(dripSmallIcon(context)!!)
-                        .setContentTitle("Drip注入失败")
-                        .setContentText("崩溃日志已保存\n可联系开发者，提供 /Download/Driplog 日志文件")
+                        .setContentTitle(title)
+                        .setContentText(body)
                         .setContentIntent(pendingIntent)
                         .setAutoCancel(true)
                         .setCategory(android.app.Notification.CATEGORY_ERROR)
@@ -101,11 +130,11 @@ object InjectionFailureWatcher {
                         INJECTION_FAILURE_CHANNEL_ID,
                     )
                         .setSmallIcon(drip.manager.R.drawable.ic_stat_drip)
-                        .setContentTitle("Drip注入失败")
-                        .setContentText("崩溃日志已保存\n可联系开发者，提供 /Download/Driplog 日志文件")
+                        .setContentTitle(title)
+                        .setContentText(body)
                         .setStyle(
                             androidx.core.app.NotificationCompat.BigTextStyle()
-                                .bigText("崩溃日志已保存\n可联系开发者，提供 /Download/Driplog 日志文件")
+                                .bigText(body)
                         )
                         .setContentIntent(pendingIntent)
                         .setAutoCancel(true)
@@ -120,7 +149,10 @@ object InjectionFailureWatcher {
             notification
             // androidx.core.app.NotificationManagerCompat.from(context)
             //     .notify(INJECTION_FAILURE_NOTIFICATION_ID, notification)
-            Log.i(TAG, "injection failure notification posted (id=$INJECTION_FAILURE_NOTIFICATION_ID)")
+            Log.i(
+                TAG,
+                "injection failure notification built (id=$INJECTION_FAILURE_NOTIFICATION_ID, title=$title)",
+            )
         } catch (e: Exception) {
             Log.w(TAG, "sendInjectionFailureNotification failed: $e", e)
         }

@@ -12,6 +12,7 @@ import androidx.compose.runtime.setValue
 import drip.manager.DeviceUser
 import drip.manager.IFrameworkDumpReceiver
 import drip.manager.IManagerService
+import drip.manager.KernelStatus
 import drip.manager.ModuleInfo
 import drip.manager.ModuleLoadFailure
 import drip.manager.ScopeEntry
@@ -241,6 +242,65 @@ object ManagerServiceClient {
 
     // ==== 注入失败检测 ====
     fun isInjectionFailed(): Boolean = call("isInjectionFailed", false) { it.isInjectionFailed() }
+    /** 注入失败来源位掩码（IManagerService.FAIL_* 按位或），manager 按位对号取文案。 */
+    fun getInjectionFailureSource(): Int =
+        call("getInjectionFailureSource", IManagerService.FAIL_NONE) { it.injectionFailureSource }
+
+    // ==== 3.13 内核模式双模（设计卡 §6：a′ 切换即写 mode，新生进程生效）====
+    /** 当前模式（kmod.mode 取值）；未连接/异常 = MODE_USER（空态降级）。 */
+    fun getMode(): String = call("getMode", IManagerService.MODE_USER) {
+        it.mode ?: IManagerService.MODE_USER
+    }
+
+    /** 写模式；false = daemon 侧条件不满足（未通过验证却要内核模式 / 取值非法）。 */
+    fun setMode(mode: String): Boolean = call("setMode", false) { it.setMode(mode) }
+
+    // ==== 3.13 内核模式验证流程（设计卡 §3）====
+    /** 前置检查通过并写入 kmod.verifying 后返回 true，否则 false。 */
+    fun startKernelVerify(): Boolean = call("startKernelVerify", false) { it.startKernelVerify() }
+
+    /** 取消验证：kill 脚本进程组 + 删 kmod.verifying（唯一合法清标志路径）。 */
+    fun cancelKernelVerify(): Boolean =
+        call("cancelKernelVerify", false) { it.cancelKernelVerify(); true }
+
+    // ==== 3.13 验证 / 回退 / 安全模式状态查询（设计卡 §2.1、§5-4、§7）====
+    /** 状态快照；未连接/异常返回中性缺省（用户模式、无标志、空路径），UI 走空态降级。 */
+    fun getKernelStatus(): KernelStatus = call("getKernelStatus", defaultKernelStatus()) { svc ->
+        val status = svc.kernelStatus
+        if (status == null) {
+            defaultKernelStatus()
+        } else {
+            // daemon 侧 parcelable 字段可能为 null（Java 平台类型），归一化后再交给 UI。
+            if (status.mode.isNullOrEmpty()) status.mode = IManagerService.MODE_USER
+            if (status.stage == null) status.stage = ""
+            if (status.feedbackPath == null) status.feedbackPath = ""
+            status
+        }
+    }
+
+    /** 退出安全模式：清 crash.count + 删 safe_mode，点即生效。 */
+    fun exitSafeMode(): Boolean = call("exitSafeMode", false) { it.exitSafeMode() }
+
+    // ==== 3.13 反安装模块 inte 检测（设计卡 §8）====
+    fun hasAntiInstallModule(): Boolean =
+        call("hasAntiInstallModule", false) { it.hasAntiInstallModule() }
+
+    /** 选是=卸载 inte；返回 true = 已卸载或本就不存在。 */
+    fun removeAntiInstallModule(): Boolean =
+        call("removeAntiInstallModule", false) { it.removeAntiInstallModule() }
+
+    fun isIntePresent(): Boolean = call("isIntePresent", false) { it.isIntePresent() }
+
+    fun getInteMode(): String = call("getInteMode", "") { it.getInteMode() }
+
+    fun setInteMode(mode: String): Boolean = call("setInteMode", false) { it.setInteMode(mode) }
+
+    /** 中性缺省状态（未连接时的空态）。 */
+    private fun defaultKernelStatus(): KernelStatus = KernelStatus().apply {
+        mode = IManagerService.MODE_USER
+        stage = ""
+        feedbackPath = ""
+    }
 
     // ==== 3.6 转储 hook 信息 ====
     fun dumpHookInfo(receiver: IFrameworkDumpReceiver): Boolean =

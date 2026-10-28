@@ -2,19 +2,25 @@
 package drip.manager.ui
 
 import android.Manifest
+import android.content.Context
 import android.os.Bundle
+import android.util.Log
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.ContentTransform
 import androidx.compose.animation.SizeTransform
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -28,6 +34,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ListAlt
@@ -38,6 +45,7 @@ import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.outlined.Extension
 import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.outlined.Warning
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
@@ -45,11 +53,13 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -59,6 +69,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import drip.manager.ModuleInfo
+import drip.manager.data.KernelModeState
 import drip.manager.data.ManagerServiceClient
 import drip.manager.data.ModuleFailureWatcher
 import drip.manager.data.InjectionFailureWatcher
@@ -68,11 +79,15 @@ import drip.manager.data.EXTRA_LOG_FILTER_TAG
 import drip.manager.data.StatusNotificationController
 import drip.manager.data.hasNotificationPermission
 import drip.manager.ui.page.HomeScreen
+import drip.manager.ui.page.KernelVerifyScreen
 import drip.manager.ui.page.LogsScreen
 import drip.manager.ui.page.ModulesScreen
 import drip.manager.ui.page.ScopeScreen
 import drip.manager.ui.page.SettingsScreen
 import drip.manager.ui.theme.DripManagerTheme
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /** 底部 4 个 tab：Outlined 常态 / Filled 选中成对（spec 要点 10）。 */
 enum class ManagerTab(
@@ -92,6 +107,10 @@ enum class ManagerTab(
  * （framework 侧不用认它——重定向只换 component/ActivityInfo，extras 原样透传）。
  */
 const val EXTRA_OPEN_MODULE = "drip.open_module"
+
+/** 首启验证弹窗位（设计卡 §10-U3）：用户选择「以后不再自动弹出」后永久不再自动弹（requirements.md:35,:68）。 */
+private const val PREFS_KERNEL_VERIFY = "kernel_verify_prompt"
+private const val KEY_KERNEL_VERIFY_PROMPT_DONE = "kernel_verify_prompt_done"
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -143,6 +162,12 @@ private fun ManagerApp(
         }
     }
     val snackbarHostState = remember { SnackbarHostState() }
+    val scope = rememberCoroutineScope()
+    // 内核模式全屏验证 overlay（首启弹出 / 主界面「内核模式」入口），进程内 overlay（U8 不做第二 Activity）
+    var showVerify by remember { mutableStateOf(false) }
+    var verifyFirstLaunch by remember { mutableStateOf(false) }
+    // 安全模式全屏警示（设计卡 §7 方案 A：每次打开 manager 且 safe_mode 在都弹，无「不再提示」）
+    var showSafeMode by remember { mutableStateOf(false) }
 
     // 初始化 client（寄生注入前连接失败 → 各页显示未连接空态，调用留痕）
     val appContext = LocalContext.current.applicationContext
@@ -179,13 +204,52 @@ private fun ManagerApp(
             && !hasNotificationPermission(appContext)) {
             notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
+        // 内核模式 / 安全模式状态快照（设计卡 §7 / §10-U3）
+        KernelModeState.refresh()
+        // 安全模式：打开 manager 且 safe_mode 在 → 每次都弹全屏（方案 A，无「不再提示」）
+        if (KernelModeState.status.safeMode) {
+            showSafeMode = true
+            Log.i(
+                "DripManager",
+                "safe mode fullscreen shown on open (crashCount=${KernelModeState.status.crashCount})",
+            )
+        }
+        // 首启验证：已通过加载验证（kmod.ok）视为完成，不再自动弹
+        val prefs = appContext.getSharedPreferences(PREFS_KERNEL_VERIFY, Context.MODE_PRIVATE)
+        val promptDone = prefs.getBoolean(KEY_KERNEL_VERIFY_PROMPT_DONE, false)
+        val verified = KernelModeState.status.verified
+        if (verified && !promptDone) {
+            prefs.edit().putBoolean(KEY_KERNEL_VERIFY_PROMPT_DONE, true).apply()
+        }
+        if (!promptDone && !verified && !KernelModeState.status.safeMode) {
+            verifyFirstLaunch = true
+            showVerify = true
+            Log.i("DripManager", "first-launch kernel verify prompt shown")
+        }
     }
 
     BackHandler(enabled = scopeModulePackage != null) { scopeModulePackage = null }
 
+    // 退出安全模式：只写待生效标记，重启后由 daemon 应用
+    val exitSafeMode: () -> Unit = {
+        scope.launch {
+            withContext(Dispatchers.IO) { ManagerServiceClient.exitSafeMode() }
+            KernelModeState.refresh()
+            showSafeMode = false
+            Toast.makeText(appContext, "已标记退出，重启后生效", Toast.LENGTH_SHORT).show()
+            Log.i("DripManager", "safe mode exit requested (after reboot)")
+        }
+    }
+
+    Box(Modifier.fillMaxSize()) {
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
         snackbarHost = { SnackbarHost(snackbarHostState) },
+        topBar = {
+            if (KernelModeState.status.safeMode) {
+                SafeModeBanner(count = KernelModeState.status.crashCount, onExit = exitSafeMode)
+            }
+        },
         bottomBar = {
             if (scopeModulePackage == null) {
                 FloatingBottomBar(selected = selectedTab, onSelect = { selectedTab = it })
@@ -237,7 +301,12 @@ private fun ManagerApp(
                         onBack = { scopeModulePackage = null },
                     )
                     is ManagerTab -> when (target) {
-                        ManagerTab.Home -> HomeScreen()
+                        ManagerTab.Home -> HomeScreen(
+                            onOpenVerify = {
+                                verifyFirstLaunch = false
+                                showVerify = true
+                            },
+                        )
                         ManagerTab.Modules -> ModulesScreen(
                             onModuleClick = {
                                 lastModule = it
@@ -256,6 +325,118 @@ private fun ManagerApp(
                     }
                     else -> Unit
                 }
+            }
+        }
+    }
+
+        // 内核模式全屏验证 overlay（首启 / 主界面「内核模式」入口；设计卡 §10-U2/U3/U8）
+        AnimatedVisibility(
+            visible = showVerify,
+            enter = fadeIn(tween(280)) + slideInVertically(tween(280)) { it },
+            exit = fadeOut(tween(220)) + slideOutVertically(tween(220)) { it },
+        ) {
+            KernelVerifyScreen(
+                onClose = {
+                    showVerify = false
+                    verifyFirstLaunch = false
+                    scope.launch { KernelModeState.refresh() }
+                },
+                firstLaunch = verifyFirstLaunch,
+                onDisableAutoPrompt = {
+                    // 用户明确选择：以后不再自动弹验证界面
+                    appContext.getSharedPreferences(PREFS_KERNEL_VERIFY, Context.MODE_PRIVATE)
+                        .edit()
+                        .putBoolean(KEY_KERNEL_VERIFY_PROMPT_DONE, true)
+                        .apply()
+                    showVerify = false
+                    verifyFirstLaunch = false
+                    Toast.makeText(appContext, "以后不再自动弹出验证界面", Toast.LENGTH_SHORT).show()
+                    Log.i("DripManager", "kernel verify auto prompt disabled by user")
+                },
+            )
+        }
+
+        // 安全模式全屏警示（每次打开都弹；点退出为标记，重启后生效）
+        if (showSafeMode) {
+            SafeModeWarning(
+                count = KernelModeState.status.crashCount,
+                onExit = exitSafeMode,
+            )
+        }
+    }
+}
+
+/** 安全模式顶部横幅（设计卡 §7：横幅 + 退出按钮；退出需重启生效）。 */
+@Composable
+private fun SafeModeBanner(count: Int, onExit: () -> Unit) {
+    Surface(color = MaterialTheme.colorScheme.error, modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                Icons.Outlined.Warning,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onError,
+            )
+            Spacer(Modifier.width(10.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    "安全模式",
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onError,
+                )
+                Text(
+                    "已检测到 $count 次系统崩溃 · 退出需重启生效",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onError.copy(alpha = 0.85f),
+                )
+            }
+            TextButton(onClick = onExit) {
+                Text("退出", color = MaterialTheme.colorScheme.onError)
+            }
+        }
+    }
+}
+
+/** 安全模式全屏警示（方案 A：每次打开都弹，无「不再提示」；退出需重启生效）。 */
+@Composable
+private fun SafeModeWarning(count: Int, onExit: () -> Unit) {
+    Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.error) {
+        Column(
+            modifier = Modifier.fillMaxSize().padding(32.dp),
+            verticalArrangement = Arrangement.Center,
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Icon(
+                Icons.Outlined.Warning,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onError,
+                modifier = Modifier.height(48.dp),
+            )
+            Spacer(Modifier.height(16.dp))
+            Text(
+                "安全模式",
+                style = MaterialTheme.typography.headlineSmall,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onError,
+            )
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "检测到 $count 次系统崩溃",
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onError,
+            )
+            Spacer(Modifier.height(12.dp))
+            Text(
+                "已禁止加载模块，仅保留核心组件与界面。退出将在重启后生效。",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onError.copy(alpha = 0.85f),
+            )
+            Spacer(Modifier.height(24.dp))
+            TextButton(onClick = onExit) {
+                Text("退出", color = MaterialTheme.colorScheme.onError)
             }
         }
     }

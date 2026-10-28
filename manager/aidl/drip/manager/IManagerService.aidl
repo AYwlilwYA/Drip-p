@@ -6,6 +6,7 @@ import android.os.ParcelFileDescriptor;
 
 import drip.manager.DeviceUser;
 import drip.manager.IFrameworkDumpReceiver;
+import drip.manager.KernelStatus;
 import drip.manager.ModuleInfo;
 import drip.manager.ModuleLoadFailure;
 import drip.manager.ScopeEntry;
@@ -149,4 +150,87 @@ interface IManagerService {
     // 末尾追加，wire-compatible，不 bump PROTOCOL_VERSION。
     List<ScopeRequestInfo> getPendingScopeRequests();
     void respondScopeRequest(int requestId, boolean allow);
+
+    // ==== 3.13 内核模式标志 schema（设计卡 §1；路径/取值/阶段的唯一权威常量）====
+    // daemon 侧 FileSystem.kt 新增字段一律由本表常量拼装、不得另写字面量；shell 脚本与
+    // zygisk 侧无 AIDL 可引，用同名字面量，改动必须与本表逐字同步（规则见 kpk 调用契约文档）。
+    const String KMOD_CONFIG_DIR = "/data/adb/drip/config";
+    const String KMOD_MODE_FILE = "kmod.mode";
+    const String KMOD_VERIFYING_FILE = "kmod.verifying";
+    const String KMOD_OK_FILE = "kmod.ok";
+    const String KMOD_FALLBACK_FILE = "kmod.fallback";
+    const String KMOD_CRASH_PENDING_FILE = "kmod.crash_pending";
+    const String SAFE_MODE_FILE = "safe_mode";
+    const String CRASH_COUNT_FILE = "crash.count";
+    // 下面两个是复原 P0 已落的既有标志（daemon 侧 FileSystem.kt 持有），登记在此仅为同源。
+    const String OBF_RESTORE_FILE = "obf_restore";
+    const String OBF_BOOT_DONE_FILE = "obf_boot.done";
+    const String KO_DIR = "/data/adb/drip/ko";
+    const String KO_FILE = "/data/adb/drip/ko/dripcore.ko";
+    const String KO_SHA256_FILE = "/data/adb/drip/ko/dripcore.ko.sha256";
+    const String VERIFY_DIR = "/data/adb/drip/verify";
+    const String RAW_KO_FILE = "/data/adb/modules/drip/kmod/raw.ko";
+    const String KPK_BIN = "/data/adb/modules/drip/bin/kpk";
+    const String VERIFY_SCRIPT = "/data/adb/modules/drip/bin/verify-kernel.sh";
+    const String MODE_USER = "user";
+    const String MODE_KERNEL = "kernel";
+    const String STAGE_INIT = "init";
+    const String STAGE_PACK = "pack";
+    const String STAGE_CHECK = "check";
+    const String STAGE_BACKFILL = "backfill";
+    const String STAGE_GATE = "gate";
+    const String STAGE_INSMOD = "insmod";
+    const String STAGE_BP = "bp";
+    const int FAIL_NONE = 0;
+    const int FAIL_RELAY = 1;
+    const int FAIL_BRIDGE = 2;
+    const int FAIL_OBF_RESTORED = 4;
+    const int FAIL_OBF_FAILED = 8;
+    const int FAIL_KMOD_FALLBACK = 16;
+    const int FAIL_KMOD_CRASH_PENDING = 32;
+
+    // ==== 3.13 内核模式双模（a′ 写即生效于新生进程，设计卡 §6）====
+    // 读写 config/kmod.mode，取值 MODE_USER | MODE_KERNEL，文件缺省 = MODE_USER。
+    String getMode();
+    // 返回 true = 已写入该模式；false = 条件不满足（未通过验证却要求内核模式 / 取值非法）。
+    boolean setMode(String mode);
+
+    // ==== 3.13 内核模式验证流程（设计卡 §3；通过性由脚本判定，daemon 只编排）====
+    // 前置检查通过并写入 kmod.verifying 后返回 true，否则 false。
+    boolean startKernelVerify();
+    // 取消验证：kill 脚本进程组 + 删 kmod.verifying（唯一合法清标志路径）。
+    void cancelKernelVerify();
+
+    // ==== 3.13 验证 / 回退 / 安全模式状态查询（设计卡 §2.1、§5-4、§7）====
+    KernelStatus getKernelStatus();
+    // 退出安全模式：清 crash.count + 删 safe_mode，点即生效；返回是否已退出。
+    boolean exitSafeMode();
+    // 注入失败来源位掩码（FAIL_* 按位或），manager 按位对号取文案。
+    int getInjectionFailureSource();
+
+    // ==== 3.13 反安装模块 inte 检测（设计卡 §8，root 精确匹配 /data/adb/modules/inte）====
+    boolean hasAntiInstallModule();
+    // 「是否卸载 inte？选是」用；返回 true = 已卸载或本就不存在。
+    boolean removeAntiInstallModule();
+
+    // ==== 执行断点信道（inline_hooker relay 面，契约 §5）====
+    // 装执行断点：同点重复装返 false（kernel 侧 -EBUSY → 幂等拒绝）。daemon 起 dripcorectl armx。
+    boolean armExecBreak(int pid, long addr, long redir);
+    // 撤执行断点：没装过也返回 true（幂等 0）。
+    boolean disarmExecBreak(int pid, long addr);
+    // [hits, flags, ret]；ret = 0 / -errno。
+    long[] getExecBreakInfo(int pid, long addr);
+
+    // ==== 3.13 inte 弹窗（present 标志驱动；ko 路径常用列表探测）====
+    const String INTE_PRESENT_FILE = "inte.present";
+    const String INTE_MODE_FILE = "inte.mode";
+    const String INTE_MODE_AUTO = "auto";
+    const String INTE_MODE_OFF = "off";
+    const String INTE_MODE_NONE = "none";
+
+    // 验证入口写入：该机内核加载过 inte（首次验证一次性）。
+    boolean isIntePresent();
+    // "" = 未选择（UI 弹三选一）；否则 auto/off/none。
+    String getInteMode();
+    boolean setInteMode(String mode);
 }

@@ -1,8 +1,11 @@
 // 关于对话框：版本/构建信息（Manager 用 BuildConfig，Framework 走 ManagerServiceClient）。
 package drip.manager.ui.page
 
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Intent
 import android.net.Uri
+import android.widget.Toast
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
@@ -89,6 +92,17 @@ fun AboutDialog(onDismiss: () -> Unit) {
                 // 社区
                 Spacer(Modifier.height(8.dp))
                 Text("社区", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                Text(
+                    "QQ 群 829621449",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.clickable {
+                        // 点击复制群号（design 卡 §9：复制到剪贴板 / mqqapi 跳转二选一）
+                        val clipboard = context.getSystemService(ClipboardManager::class.java)
+                        clipboard?.setPrimaryClip(ClipData.newPlainText("drip qq group", "829621449"))
+                        Toast.makeText(context, "已复制 QQ 群号", Toast.LENGTH_SHORT).show()
+                    },
+                )
                 Text(
                     "Telegram 交流群",
                     style = MaterialTheme.typography.bodySmall,

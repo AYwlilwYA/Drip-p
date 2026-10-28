@@ -124,6 +124,8 @@ fun ScopeScreen(
     var showModules by rememberSaveable { mutableStateOf(false) }
     var recommendedOnly by rememberSaveable { mutableStateOf(false) }
     var selectedUserIdx by rememberSaveable { mutableStateOf(0) }
+    // 设备真实用户 id（daemon 枚举；含分身 user 999），过滤 tab 与筛选共用。
+    var deviceUsers by remember { mutableStateOf<List<Int>>(listOf(0)) }
     // 排序状态
     var sortOrder by rememberSaveable { mutableStateOf(ScopeSort.Relevance) }
     var reverseSort by rememberSaveable { mutableStateOf(false) }
@@ -157,6 +159,9 @@ fun ScopeScreen(
         val initial = scope.map { key(it.appPackageName, it.userId) }.toSet()
         val includeNew = ManagerServiceClient.getIncludeNewApps(module.packageName)
         val daemonRecommended = ManagerServiceClient.getModuleRecommendedScope(module.packageName).toSet()
+        val users = withContext(Dispatchers.IO) {
+            runCatching { ManagerServiceClient.getUsers().map { it.id } }.getOrDefault(emptyList())
+        }.ifEmpty { listOf(0) }
         // 应用列表/图标/标签/推荐作用域移出主线程避免卡顿。
         // 列表来源（多用户完整）：daemon（root）getInstalledPackagesFromAllUsers——本地 PM
         // 只能看到 user 0，user 10 的应用必须由 daemon 列出；label/icon 仍走本地 PM 快路径。
@@ -197,6 +202,7 @@ fun ScopeScreen(
         appInfoMap = map
         apps = list
         recommended = rec
+        deviceUsers = users
         includeNewApps = includeNew
         initialKeys = initial
         checkedKeys = initial
@@ -253,7 +259,7 @@ fun ScopeScreen(
     // 触发重算——勿把 checkedKeys 加回 key，否则勾选又变回实时重排。
     val filtered = remember(
         query, showSystem, showModules, recommendedOnly, selectedUserIdx,
-        sortOrder, reverseSort, apps, recommended, sortTick,
+        sortOrder, reverseSort, apps, recommended, sortTick, deviceUsers,
     ) {
         var list = apps.filter { app ->
             (query.isBlank() || app.label.contains(query, ignoreCase = true) ||
@@ -264,7 +270,7 @@ fun ScopeScreen(
                                     (showModules || !app.isModule)
                             )) &&
                     (selectedUserIdx == 0 ||
-                            app.userId == if (selectedUserIdx == 1) 0 else 10) &&
+                            app.userId == deviceUsers.getOrElse(selectedUserIdx - 1) { -1 }) &&
                     // 静态作用域：只展示作用域内成员（只读；系统成员由上方 #2 自动 showSystem 可见）
                     (!isStaticScope || key(app.packageName, app.userId) in checkedKeys)
         }
@@ -605,16 +611,13 @@ fun ScopeScreen(
                         onClick = { selectedUserIdx = 0 },
                         label = { Text("全部") },
                     )
-                    FilterChip(
-                        selected = selectedUserIdx == 1,
-                        onClick = { selectedUserIdx = 1 },
-                        label = { Text("用户 0") },
-                    )
-                    FilterChip(
-                        selected = selectedUserIdx == 2,
-                        onClick = { selectedUserIdx = 2 },
-                        label = { Text("用户 10") },
-                    )
+                    deviceUsers.forEachIndexed { index, uid ->
+                        FilterChip(
+                            selected = selectedUserIdx == index + 1,
+                            onClick = { selectedUserIdx = index + 1 },
+                            label = { Text(if (uid == 0) "用户 0" else "用户 $uid") },
+                        )
+                    }
                 }
             }
         }

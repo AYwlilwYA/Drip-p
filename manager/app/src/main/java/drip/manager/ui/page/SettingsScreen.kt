@@ -4,6 +4,13 @@ package drip.manager.ui.page
 import android.Manifest
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ShortcutManager
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.drawable.AdaptiveIconDrawable
+import android.graphics.drawable.BitmapDrawable
+import android.graphics.drawable.Drawable
+import android.graphics.drawable.LayerDrawable
 import android.os.Build
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -28,6 +35,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import androidx.core.content.pm.ShortcutInfoCompat
 import androidx.core.content.pm.ShortcutManagerCompat
 import androidx.core.graphics.drawable.IconCompat
@@ -304,10 +312,15 @@ fun SettingsScreen(
 }
 
 /** 创建桌面快捷方式（本地 ShortcutManager 真实实现）。寄生模式用宿主 Activity + LAUNCH_MANAGER，
- * 由宿主 framework 重定向到 manager UI；独立模式直接指向 MainActivity。 */
+ *  由宿主 framework 重定向到 manager UI；独立模式直接指向 MainActivity。 */
 private fun createShortcut(context: Context) {
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
         Toast.makeText(context, "当前系统不支持动态快捷方式", Toast.LENGTH_SHORT).show()
+        return
+    }
+    val sm = context.getSystemService(ShortcutManager::class.java)
+    if (sm == null || !sm.isRequestPinShortcutSupported) {
+        Toast.makeText(context, "当前桌面不支持创建快捷方式", Toast.LENGTH_SHORT).show()
         return
     }
     val shortcutIntent = buildManagerOpenIntent(context).apply {
@@ -315,7 +328,7 @@ private fun createShortcut(context: Context) {
     }
     val shortcut = ShortcutInfoCompat.Builder(context, "drip_manager")
         .setShortLabel("Drip Manager")
-        .setIcon(IconCompat.createWithResource(context, R.mipmap.ic_launcher))
+        .setIcon(shortcutIcon(context))
         .setIntent(shortcutIntent)
         .build()
     val accepted = ShortcutManagerCompat.requestPinShortcut(context, shortcut, null)
@@ -324,6 +337,34 @@ private fun createShortcut(context: Context) {
         if (accepted) "已创建桌面快捷方式" else "快捷方式请求被拒绝",
         Toast.LENGTH_SHORT,
     ).show()
+}
+
+/** 快捷方式图标：寄生下资源 ID 归宿主包、launcher 解析不到（= 空白/通用图标根因），
+ *  本地渲染成 bitmap 按值内嵌。AdaptiveIcon 叠 background+foreground 保持无 mask，
+ *  交给 launcher 套（对齐 Vector LaunchShortcut.icon）。返回 null 时 launcher 用默认占位。 */
+private fun shortcutIcon(context: Context): IconCompat? = try {
+    val drawable = ContextCompat.getDrawable(context, R.mipmap.ic_launcher) ?: return null
+    if (drawable is BitmapDrawable) {
+        IconCompat.createWithAdaptiveBitmap(drawable.bitmap)
+    } else {
+        val flat: Drawable =
+            if (drawable is AdaptiveIconDrawable) {
+                LayerDrawable(
+                    listOfNotNull(drawable.background, drawable.foreground).toTypedArray(),
+                )
+            } else {
+                drawable
+            }
+        val width = flat.intrinsicWidth.takeIf { it > 0 } ?: 108
+        val height = flat.intrinsicHeight.takeIf { it > 0 } ?: 108
+        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bitmap)
+        flat.setBounds(0, 0, canvas.width, canvas.height)
+        flat.draw(canvas)
+        IconCompat.createWithAdaptiveBitmap(bitmap)
+    }
+} catch (t: Throwable) {
+    null
 }
 
 /** 转储 hook 信息：走 daemon dumpHookInfo（未连接降级留痕 + Toast）。 */
